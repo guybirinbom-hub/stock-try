@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stocktry"
+version = "0.1.0"
+description = "Zero-token deterministic backtest, validation and paper-trading harness for low-turnover ETF strategies."
+readme = "README.md"
+requires-python = ">=3.11"
+# Runtime dependencies are pinned in requirements.txt (install that first).
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
