@@ -246,13 +246,14 @@ Same rule (10-month SMA), signal evaluated on each trading-day offset 0..20 of t
 ## Gate A scorecard (pre-registered in docs/research-report.md section 12)
 
 A candidate may be paper-traded only if it passes every row. Definitions are in docs/methodology.md.
+A3 was amended after the first harness run (2026-09-29; research report section 14): the CAGR condition is now required in every case. The change is stricter and changed no verdict.
 
-| sample / candidate | A1 pre-registered | A2 >=15y, 2008/20/22, >=5bp, 2x costs | wf_sharpe | A3 WF Sharpe>=0.5 & beats B&H | dsr | pbo | A4 DSR>=0.95 & PBO<=0.2 | plateau | A5 plateau>=0.7 | A6 boot p5 CAGR>0 & p95 DD<=B&H | 5y windows won (of 3) | A7 2008 & 2022 & >=2/3 5y | A8 leakage | verdict |
+| sample / candidate | A1 pre-registered | A2 >=15y, 2008/20/22, >=5bp, 2x costs | wf_sharpe | A3 WF Sharpe>=0.5 & CAGR>=B&H-1% & (Sharpe>B&H or DD<=0.7xB&H) | dsr | pbo | A4 DSR>=0.95 & PBO<=0.2 | plateau | A5 plateau>=0.7 | A6 boot p5 CAGR>0 & p95 DD<=B&H | 5y windows won (of 3) | A7 2008 & 2022 & >=2/3 5y | A8 leakage | verdict |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| proxy / trend_sma10 | PASS | PASS | 0.65 | PASS | 0.98 | 0.87 | FAIL | 1.00 | PASS | PASS | 0 | FAIL | PASS | REJECTED (A4, A7) |
+| proxy / trend_sma10 | PASS | PASS | 0.65 | FAIL | 0.98 | 0.87 | FAIL | 1.00 | PASS | PASS | 0 | FAIL | PASS | REJECTED (A3, A4, A7) |
 | proxy / trend_absmom12 | PASS | PASS | 0.56 | PASS | 0.99 | 0.87 | FAIL | 0.89 | PASS | PASS | 0 | FAIL | PASS | REJECTED (A4, A7) |
 | proxy / trend_ensemble | PASS | PASS | 0.73 | PASS | 0.99 | 0.87 | FAIL | n/a | n/a | PASS | 0 | FAIL | PASS | REJECTED (A4, A7) |
-| proxy / gtaa4 | PASS | PASS | 0.69 | PASS | 0.98 | 0.66 | FAIL | 0.94 | PASS | PASS | 0 | FAIL | PASS | REJECTED (A4, A7) |
+| proxy / gtaa4 | PASS | PASS | 0.69 | FAIL | 0.98 | 0.66 | FAIL | 0.94 | PASS | PASS | 0 | FAIL | PASS | REJECTED (A3, A4, A7) |
 | etf / gtaa5 | PASS | PASS | 0.56 | FAIL | 0.92 | 0.49 | FAIL | 0.91 | PASS | PASS | 0 | FAIL | PASS | REJECTED (A3, A4, A7) |
 
 ## Charts

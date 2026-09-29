@@ -316,9 +316,16 @@ python scripts/paper_rebalance.py --broker alpaca --strategy spy_buy_hold --no-d
 broker and the local ledger shows no evaluated run for it; it is recorded in
 the ledger (`late_start`), refused when `CI` or `GITHUB_ACTIONS` is `true`, and
 must never be put in a scheduler (it would bring back mid-month trading on
-drifted prices). A re-entry blocked on the first day by the size limits (section
-8) is confirmed the same way: `--initial-deployment` plus `--late-start` if it
-is no longer the first session.
+drifted prices). The ledger check fails closed: if the local ledger cannot be
+read (typically a line cut short by a crash), a `--late-start` run sends
+nothing, alerts `late_start_ledger_unreadable`, prints `status=blocked` and
+exits 2 (a dry run is refused the same way). Repair the ledger (section 9),
+confirm again that no run evaluated the scheduled session, and rerun. Runs
+without `--late-start` are not affected: they fall back to the broker rule
+above, which never opens new legs after the first session. A re-entry blocked
+on the first day by the size limits (section 8) is confirmed the same way:
+`--initial-deployment` plus `--late-start` if it is no longer the first
+session.
 
 ## 9. Read the ledger
 
@@ -340,6 +347,27 @@ day (the last record for a day wins); dividends are per rebalance id (the last
 record for an id wins). The broker, not the ledger, decides idempotency: a
 crash between sending an order and writing the ledger loses nothing, because
 the next run finds the order by its id.
+
+**A line cut short by a crash.** Every write starts on a new line (a newline is
+added first if the file does not end with one), so a crash mid-write damages
+only its own line. That line still makes the file unreadable as a whole:
+unattended runs carry on under the broker rule, but `--late-start` and
+`--show-ledger` need it repaired. Keep a copy, find the bad line and delete
+only that line (never edit any other):
+
+```bash
+cp data/ledger/spy_buy_hold.jsonl data/ledger/spy_buy_hold.jsonl.bak
+python - data/ledger/spy_buy_hold.jsonl <<'EOF'
+import json, sys
+for i, line in enumerate(open(sys.argv[1], encoding="utf-8"), 1):
+    try:
+        if line.strip():
+            json.loads(line)
+    except ValueError:
+        print(f"line {i} is not valid JSON: {line[:80]!r}")
+EOF
+sed -i '<N>d' data/ledger/spy_buy_hold.jsonl   # <N>: the line number printed above
+```
 
 ## 10. Scheduling: use an external trigger, not GitHub's cron
 
@@ -535,6 +563,7 @@ effectively unrecoverable; paper trading covers the same plumbing for free.
 | `submissions_stopped` (alert, exit 1) | The market window closed or the 8-minute run deadline passed while the run was waiting on fills | Nothing to undo: no order was sent late. The next trigger (same day) finishes the started legs |
 | `execution_window_closed` (skip, exit 0) | The month's rebalance is past its first five sessions | Nothing: the next month's rebalance restores the targets |
 | `first_session_passed` (skip, exit 0) | A session after the month's first: new legs are not opened on drifted prices | Nothing, normally. If the first session was missed, see section 8, `--late-start` |
+| `late_start_ledger_unreadable` (blocked, exit 2) | `--late-start` could not read the local ledger to confirm no run evaluated the scheduled session; nothing was sent | Repair the ledger (section 9), check again that no run evaluated the scheduled session, rerun |
 | `rebalance_already_evaluated`, `rebalance_already_executed` (skipped legs) | A run already evaluated or started this rebalance; drift is not traded until next month | Nothing |
 
 ## 18. Alpaca behaviours that are ambiguous, and how the code handles them

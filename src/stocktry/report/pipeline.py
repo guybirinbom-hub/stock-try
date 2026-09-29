@@ -60,6 +60,12 @@ BOOT_PATHS = 2000
 BOOT_BLOCK = 6.0
 SHIFT_TOL = 0.15  # Gate A.8: |Sharpe change| under a one-day execution delay (pre-registered)
 COST2X_RETAIN = 0.90  # Gate A.2: Sharpe at 2x costs must keep >= 90% of Sharpe at 1x (pre-registered)
+# Gate A.3 (amended 2026-09-29, after the first run; no verdict changed): walk-forward Sharpe >= 0.5 AND CAGR >= SPY's
+# minus 1 point AND (Sharpe > SPY's OR |MaxDD| <= 0.7 x SPY's).
+A3_WF_SHARPE = 0.5
+A3_CAGR_GAP = 0.01
+A3_DD_RATIO = 0.7
+A3_COLUMN = "A3 WF Sharpe>=0.5 & CAGR>=B&H-1% & (Sharpe>B&H or DD<=0.7xB&H)"
 LABELS = {
     "spy_buy_hold": "SPY buy & hold", "sixty_forty": "60/40 SPY/AGG", "trend_sma10": "SPY 10-mo SMA",
     "trend_absmom12": "SPY 12-mo abs. momentum", "trend_ensemble": "SPY trend ensemble",
@@ -447,9 +453,12 @@ class Pipeline:
         wf_key = {"trend_ensemble": "trend_all"}.get(c, fam)
         wrow = wf[(wf["sample"] == s.name) & (wf["family"] == wf_key)].iloc[0]
         wf_sr = wrow["ensemble_sharpe"] if c == "trend_ensemble" else wrow["wf_sharpe"]
-        beats = m["sharpe"] > mb["sharpe"] or (m["cagr"] >= mb["cagr"] - 0.01 and abs(m["max_dd"]) <= 0.7 * abs(mb["max_dd"]))
+        # A3 as amended 2026-09-29 (research report sections 12 and 14): the CAGR condition is required, and the
+        # candidate must also beat buy-and-hold on Sharpe or have at least 30% smaller maximum drawdown.
+        cagr_ok = m["cagr"] >= mb["cagr"] - A3_CAGR_GAP
+        sharpe_or_dd = m["sharpe"] > mb["sharpe"] or abs(m["max_dd"]) <= A3_DD_RATIO * abs(mb["max_dd"])
         row["wf_sharpe"] = wf_sr
-        row["A3 WF Sharpe>=0.5 & beats B&H"] = bool(wf_sr >= 0.5 and beats)
+        row[A3_COLUMN] = bool(wf_sr >= A3_WF_SHARPE and cagr_ok and sharpe_or_dd)
         d = self.out["dsr"]
         dsr_v = float(d[(d["sample"] == s.name) & (d["strategy"] == c)]["dsr_all"].iloc[0])
         p = self.out["pbo"]
@@ -600,6 +609,8 @@ def write_summary(p: Pipeline) -> None:
     fm.update({"wf_sharpe": num, "dsr": num, "pbo": num, "plateau": num})
     lines += ["## Gate A scorecard (pre-registered in docs/research-report.md section 12)", "",
               "A candidate may be paper-traded only if it passes every row. Definitions are in docs/methodology.md.",
+              "A3 was amended after the first harness run (2026-09-29; research report section 14): the CAGR "
+              "condition is now required in every case. The change is stricter and changed no verdict.",
               "", md_table(g, fm, index_label="sample / candidate"), ""]
     lines += ["## Charts", ""]
     for sname in ("long", "proxy", "etf"):

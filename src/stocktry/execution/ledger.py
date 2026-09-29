@@ -87,11 +87,22 @@ class Ledger:
         self.path = Path(path)
 
     def append(self, record: Mapping[str, Any]) -> None:
+        """Append one record as its own line.
+
+        Newline-safe: if the file does not end with a newline (a line cut short
+        by a crash), a newline is written first, so the damage stays confined to
+        that one line instead of fusing with this record and every later one.
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         rec = {"schema": SCHEMA_VERSION, "ts": datetime.now(timezone.utc).isoformat(), **record}
-        line = json.dumps(to_jsonable(rec), sort_keys=True)
-        with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        line = json.dumps(to_jsonable(rec), sort_keys=True).encode("utf-8") + b"\n"
+        with open(self.path, "a+b") as fh:  # writes always go to the end; reads may seek
+            size = fh.seek(0, os.SEEK_END)
+            if size:
+                fh.seek(size - 1)
+                if fh.read(1) != b"\n":
+                    line = b"\n" + line
+            fh.write(line)
             fh.flush()
             os.fsync(fh.fileno())
 

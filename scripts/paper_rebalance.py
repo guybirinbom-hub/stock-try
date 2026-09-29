@@ -32,7 +32,8 @@ error. The source and feed are recorded in the ledger for every run.
 New legs of a month's rebalance are opened only on its scheduled session (the
 first session of the month); later triggers finish legs that already have an
 order and otherwise do nothing. ``--late-start`` is the operator's explicit
-confirmation that no run evaluated the scheduled session (refused in CI).
+confirmation that no run evaluated the scheduled session (refused in CI, and
+refused with exit 2 when the local ledger cannot be read to cross-check it).
 
 Exit codes: 0 ok (including "market closed, nothing done"), 1 incomplete
 rebalance, 2 guard violation, 3 kill switch / live not authorized,
@@ -109,7 +110,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--late-start", action="store_true",
                    help="operator only: you confirm that no run evaluated this month's rebalance on its scheduled "
                         "session (first session of the month); open its legs on a later session of the 5-session "
-                        "execution window. Refused under CI/GitHub Actions; never put it in a scheduler")
+                        "execution window. Refused under CI/GitHub Actions, and (exit 2) when the local ledger "
+                        "cannot be read; never put it in a scheduler")
     p.add_argument("--corporate-action", action="append", default=[], metavar="SYMBOL",
                    help="allow a >30%% price move for SYMBOL (real split or distribution)")
     p.add_argument("--max-order-notional", type=Decimal, help="override per-order dollar cap (needs --limits-ack)")

@@ -200,7 +200,7 @@ formula is unit-tested against hand-computed numbers (`tests/test_backtest_metri
 |---|---|
 | A1 | pre-registered: published default parameters; every variant in the ledger |
 | A2 | sample >= 15 years including 2008 and 2022 (and 2020); gate cost tier (>= 5 bp per side); Sharpe at 2x costs >= 90% of Sharpe at 1x |
-| A3 | walk-forward Sharpe of the candidate's family >= 0.5 (for the ensemble, which has no parameter: its own Sharpe over the same out-of-sample months) **and** full-sample Sharpe > SPY's, or CAGR within 1%/yr of SPY with |MaxDD| <= 70% of SPY's |
+| A3 | walk-forward Sharpe of the candidate's family >= 0.5 (for the ensemble, which has no parameter: its own Sharpe over the same out-of-sample months) **and** full-sample CAGR >= SPY's CAGR - 1 percentage point **and** (full-sample Sharpe > SPY's **or** \|MaxDD\| <= 0.7 x SPY's \|MaxDD\|) (amended 2026-09-29; see below) |
 | A4 | DSR (N = all ledger trials on the sample) >= 0.95 **and** PBO of the candidate's grid <= 0.2 |
 | A5 | plateau statistic >= 0.70 (not applicable to the ensemble) |
 | A6 | bootstrap 5th-percentile CAGR > 0 **and** 95th-percentile drawdown magnitude <= SPY's |
@@ -212,6 +212,15 @@ a leaky edge would collapse under an extra bar of delay, a genuine slow rule sho
 the candidate's Sharpe does not depend on the signal bar. The future-tamper test was added to A8 after the first
 harness run (adversarial review CORE-10) because the delay test alone cannot see a small leak in a slow rule; it only
 makes the gate stricter, and every candidate passes it.
+
+A3 was amended on 2026-09-29, after the first harness run, to match the amended wording in the research report
+(section 12, recorded as a post-hoc change in section 14). As first implemented it read: walk-forward Sharpe >= 0.5
+**and** (Sharpe > SPY's **or** (CAGR >= SPY's - 1 point **and** |MaxDD| <= 0.7 x SPY's)), so a candidate could pass
+on Sharpe alone while lagging buy-and-hold in return by more than a point a year. The CAGR condition is now required
+in every case. The change only makes the gate stricter (every candidate that passes the amended A3 also passed the
+original). It changed no verdict: every candidate was already rejected on A4 and A7 and is still rejected. A3 itself
+now fails for the 10-month SMA rule (CAGR 1.2 points below SPY's) and GTAA-4 (3.4 points below), which passed the
+original A3 on Sharpe; GTAA-5 fails both versions.
 
 Candidates are gated on their primary sample: the proxy sample for the SPY trend rules and GTAA-4, the ETF-only sample
 for GTAA-5.

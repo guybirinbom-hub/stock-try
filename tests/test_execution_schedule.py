@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
@@ -233,3 +234,45 @@ def test_unreadable_ledger_falls_back_to_the_broker_rule(tmp_path):
     # the ledger line is repaired by nobody: the run still decides from the calendar (session 2: no new legs)
     res = sc.run()
     assert res.status in ("skipped",) and sc.broker.orders == []
+
+
+def test_late_start_is_refused_when_the_ledger_cannot_be_read(tmp_path):
+    """RECHECK2-01: the operator override fails closed when its evaluated-run cross-check cannot run."""
+    sc = scenario(tmp_path, now=et(2026, 10, 2, 11), cfg_overrides={"late_start": True})
+    sc.cfg.ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    sc.cfg.ledger_path.write_text('{"event": "run_end", "status": "compl')  # a line cut short by a crash
+    res = sc.run()
+    assert res.status == "blocked" and res.exit_code == 2 and sc.broker.orders == []
+    assert "late_start_ledger_unreadable" in res.reason and res.alerts == ["late_start_ledger_unreadable"]
+    lines = sc.cfg.ledger_path.read_text().splitlines()
+    assert lines[0] == '{"event": "run_end", "status": "compl'  # never rewritten
+    tail = [json.loads(line) for line in lines[1:]]  # later records stay on their own, readable lines
+    assert tail[-1]["event"] == "guard_violation" and tail[-1]["code"] == "late_start_ledger_unreadable"
+    assert not any(r["event"] == "late_start" for r in tail)
+    # the same run in dry-run mode is refused too (the preview shows what a real run would do)
+    assert sc.run(cfg=replace(sc.cfg, dry_run=True)).status == "blocked"
+    # an unattended run (no late start) keeps the broker rule: session 2 with no order opens nothing, exit 0
+    res2 = sc.run(cfg=replace(sc.cfg, late_start=False))
+    assert res2.status == "skipped" and res2.exit_code == 0 and sc.broker.orders == []
+
+
+def test_ledger_append_starts_a_new_line_after_a_truncated_one(tmp_path):
+    path = tmp_path / "l.jsonl"
+    led = Ledger(path)
+    led.append({"event": "a"})
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write('{"event": "run_end", "status": "compl')  # a crash mid-write: no trailing newline
+    led.append({"event": "b"})
+    led.append({"event": "c"})
+    raw = path.read_text(encoding="utf-8")
+    assert raw.endswith("\n") and raw.count("\n") == 4
+    lines = raw.splitlines()
+    assert lines[1] == '{"event": "run_end", "status": "compl'  # the damage stays on its own line
+    assert [json.loads(lines[i])["event"] for i in (0, 2, 3)] == ["a", "b", "c"]
+    # a file that already ends with a newline gets no blank line; an empty/new file gets no leading newline
+    fresh = Ledger(tmp_path / "new.jsonl")
+    fresh.append({"event": "x"})
+    fresh.append({"event": "y"})
+    assert [r["event"] for r in fresh.read()] == ["x", "y"]
+    text = (tmp_path / "new.jsonl").read_text()
+    assert "\n\n" not in text and not text.startswith("\n")

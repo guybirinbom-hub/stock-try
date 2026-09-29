@@ -765,11 +765,15 @@ def test_gate_scorecard_is_consistent_with_the_csvs_and_methodology():
         keep = c["sharpe_2x"] >= 0.9 * c["sharpe"] if c["sharpe"] > 0 else False
         years_ok = c["months"] >= 180 and c["first_month"] <= "2008-01" and c["last_month"] >= "2022-12"
         assert (row["A2 >=15y, 2008/20/22, >=5bp, 2x costs"] == "PASS") == bool(keep and years_ok)
-        # A3 (the "beats buy-and-hold" half is necessary for a PASS)
-        beats = c["sharpe"] > b["sharpe"] or (c["cagr"] >= b["cagr"] - 0.01
-                                              and abs(c["max_dd"]) <= 0.7 * abs(b["max_dd"]))
-        if row["A3 WF Sharpe>=0.5 & beats B&H"] == "PASS":
-            assert beats
+        # A3 as amended 2026-09-29: WF Sharpe >= 0.5 AND CAGR >= B&H - 1 point AND (Sharpe > B&H OR
+        # |MaxDD| <= 0.7 x B&H). The full-sample half is decided exactly from the csv; WF Sharpe is shown rounded.
+        rel = c["cagr"] >= b["cagr"] - 0.01 and (c["sharpe"] > b["sharpe"]
+                                                 or abs(c["max_dd"]) <= 0.7 * abs(b["max_dd"]))
+        a3 = row["A3 WF Sharpe>=0.5 & CAGR>=B&H-1% & (Sharpe>B&H or DD<=0.7xB&H)"]
+        if a3 == "PASS":
+            assert rel and float(row["wf_sharpe"]) >= 0.5
+        if not rel or float(row["wf_sharpe"]) < 0.495:
+            assert a3 == "FAIL"
         # A4 from dsr.csv / pbo.csv
         d = float(dsr[(dsr["sample"] == sname) & (dsr["strategy"] == cand)]["dsr_all"].iloc[0])
         grid = "trend" if cand.startswith("trend") else cand

@@ -33,7 +33,10 @@ operations for one run:
    exception is ``RunConfig.late_start``, an operator's explicit confirmation
    (``--late-start``) that no run evaluated the scheduled session; it opens
    legs on a later session of the window only while no order of the rebalance
-   exists at the broker and the ledger shows no evaluated run.
+   exists at the broker and the ledger shows no evaluated run. The override
+   fails closed: when the local ledger cannot be read, a ``late_start`` run is
+   refused (status ``blocked``, alert ``late_start_ledger_unreadable``, exit as
+   a guard violation) rather than skipping that cross-check.
 6. Validate inputs (weights, whitelist, dated fresh prices, live prices,
    equity), plan, and apply plan-level hard guards. Log the full plan.
 7. Dry run: stop here. Otherwise sells first; wait for terminal states (cancel
@@ -128,7 +131,8 @@ class RunConfig:
     ``late_start``: operator confirmation that the rebalance was not evaluated
     on its scheduled session (scheduler outage, a guard block fixed since);
     lets a later session of the execution window open its legs while no order
-    of the rebalance exists yet. Never set it in an unattended scheduler.
+    of the rebalance exists yet, and is refused when the local ledger cannot be
+    read (its evaluated-run cross-check). Never set it in an unattended scheduler.
     ``poll_interval_s`` seconds between order-status polls, ``poll_max`` polls
     per wait before cancelling. ``cash_buffer_*``: dollars kept back for fees.
     """
@@ -166,7 +170,7 @@ class RunConfig:
 
 @dataclass
 class RunResult:
-    status: str  # dry_run | completed | nothing_to_do | already_done | skipped | incomplete
+    status: str  # dry_run | completed | nothing_to_do | already_done | skipped | incomplete | blocked
     rebalance_id: str
     dry_run: bool
     reason: str = ""
@@ -183,7 +187,8 @@ class RunResult:
 
     @property
     def exit_code(self) -> int:
-        return 1 if self.status == "incomplete" else 0
+        """0 ok, 1 incomplete, 2 blocked (a guard refusal returned rather than raised; nothing was sent)."""
+        return {"incomplete": 1, "blocked": 2}.get(self.status, 0)
 
 
 @dataclass(frozen=True)
@@ -600,7 +605,16 @@ def _rebalance(
     orders_since = broker.list_orders("all", after=run.rebalance_start)
     ours_start = run.ours(orders_since)
     res.existing.extend(ours_start)
-    _new_leg_gate(run, ours_start, n_session, today, due)
+    refusal = _new_leg_gate(run, ours_start, n_session, today, due)
+    if refusal is not None:
+        # an operator override whose cross-check cannot be performed: refuse the whole run, before any wait or
+        # order, with an alert and a guard-violation ledger record (exit 2, like a raised guard; no success ping)
+        code, detail = refusal
+        run.alert(code, detail)
+        res.status, res.reason = "blocked", f"{code}: {detail}"
+        _safe_append(run.ledger, {"event": "guard_violation", "rebalance_id": run.rebalance_id, "code": code,
+                                  "detail": detail, "submitted": []})
+        return res
     open_ours = [o.client_order_id for o in ours_start if not o.is_terminal]
     if open_ours and not cfg.dry_run:
         log.info("waiting for %d open order(s) from an earlier run", len(open_ours))
@@ -709,16 +723,27 @@ def _rebalance(
 #: Statuses of a ``run_end`` record that mean the rebalance was evaluated (its new legs are closed).
 EVALUATED_STATUSES = ("completed", "already_done", "nothing_to_do")
 FIRST_SESSION_PASSED = "first_session_passed"
+LATE_START_LEDGER_UNREADABLE = "late_start_ledger_unreadable"
 
 
-def _new_leg_gate(run: _Run, ours_start: Sequence[Order], n_session: int, today: date, due: date) -> None:
+def _new_leg_gate(run: _Run, ours_start: Sequence[Order], n_session: int, today: date,
+                  due: date) -> tuple[str, str] | None:
     """Decide whether this run may open new legs (attempt ``a1``); see the module docstring, step 5.
 
-    Broker state and the calendar decide; the local ledger can only close the gate further.
+    Broker state and the calendar decide; the local ledger can only close the gate further. Returns
+    ``(code, detail)`` when the run must be refused outright: a ``late_start`` override whose ledger
+    cross-check cannot be performed. Unattended runs never get a refusal from here.
     """
     try:
         records = run.ledger.read()
-    except (OSError, ValueError) as exc:  # e.g. a line cut short by a crash; the broker rule still applies
+    except (OSError, ValueError) as exc:  # e.g. a line cut short by a crash
+        if run.cfg.late_start:  # the operator override fails closed: its cross-check needs the ledger
+            run.new_legs_allowed, run.new_legs_block = False, LATE_START_LEDGER_UNREADABLE
+            return LATE_START_LEDGER_UNREADABLE, (
+                f"--late-start must confirm from the local ledger that no run evaluated the {due.isoformat()} "
+                f"rebalance, but {run.ledger.path} cannot be read ({type(exc).__name__}); nothing was sent. "
+                f"Repair the ledger (runbook section 9) and rerun, or leave the drift to next month")
+        # unattended: the broker rule and the calendar still apply
         log.warning("ledger unreadable (%s); deciding new legs from broker state and the calendar only",
                     type(exc).__name__)
         records = []
@@ -730,21 +755,22 @@ def _new_leg_gate(run: _Run, ours_start: Sequence[Order], n_session: int, today:
             run.new_legs_allowed, run.new_legs_block = False, "rebalance_already_executed"
         elif evaluated:
             run.new_legs_allowed, run.new_legs_block = False, "rebalance_already_evaluated"
-        return
+        return None
     if evaluated:
         run.new_legs_allowed, run.new_legs_block = False, "rebalance_already_evaluated"
         if run.cfg.late_start:
             log.warning("--late-start ignored: the ledger shows the %s rebalance was already evaluated",
                         due.isoformat())
-        return
+        return None
     if n_session > 1 and not run.cfg.late_start:
         run.new_legs_allowed, run.new_legs_block = False, FIRST_SESSION_PASSED
-        return
+        return None
     if n_session > 1:
         log.warning("late start (operator confirmed): opening legs of the %s rebalance on session %d (%s)",
                     due.isoformat(), n_session, today.isoformat())
         run.ledger.append({"event": "late_start", "rebalance_id": run.rebalance_id, "session": n_session,
                            "dry_run": run.cfg.dry_run})
+    return None
 
 
 def _previous_rebalance_date(cal: Sequence[CalendarDay], due: date) -> date | None:
