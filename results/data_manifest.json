@@ -1,0 +1,433 @@
+{
+ "generated_utc": "2026-09-29T10:40:23Z",
+ "symbols": {
+  "SPY": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:06Z",
+   "sha256": "1364919c2aabde75fd87bb0473a38b88eb7cf9f13882954cf7090c8a72401eca",
+   "first_date": "1993-01-29",
+   "last_date": "2026-09-28",
+   "rows": 8473,
+   "dividend_events": 136,
+   "splits": [],
+   "valid_from": null
+  },
+  "VTI": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:06Z",
+   "sha256": "751aa39a483bcebd2974a919517053c823cc978dd6d601d653d0397b26896327",
+   "first_date": "2001-06-15",
+   "last_date": "2026-09-28",
+   "rows": 6358,
+   "dividend_events": 102,
+   "splits": [
+    "2008-06-18"
+   ],
+   "valid_from": null
+  },
+  "IEF": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:07Z",
+   "sha256": "e9abbab02ab6a79639ec971b0a41b503997c00c629c02b212944688be4f82642",
+   "first_date": "2002-07-30",
+   "last_date": "2026-09-28",
+   "rows": 6080,
+   "dividend_events": 290,
+   "splits": [],
+   "valid_from": null
+  },
+  "AGG": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:07Z",
+   "sha256": "76a6190e71ad20d7c019d9e24d86d3fd3e6d4f1ca66243fd9d8f6172524be75b",
+   "first_date": "2003-09-29",
+   "last_date": "2026-09-28",
+   "rows": 5786,
+   "dividend_events": 275,
+   "splits": [],
+   "valid_from": null
+  },
+  "BND": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:07Z",
+   "sha256": "eec1d21f7d13dc18d808d768bba843c035e8544672bb4b166fa2923a52bf3344",
+   "first_date": "2007-04-10",
+   "last_date": "2026-09-28",
+   "rows": 4899,
+   "dividend_events": 231,
+   "splits": [],
+   "valid_from": null
+  },
+  "VNQ": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:08Z",
+   "sha256": "af805341dd43da0f4798171cd95042c7e07527221483c178e3f04c3efb1c1f98",
+   "first_date": "2004-09-29",
+   "last_date": "2026-09-28",
+   "rows": 5534,
+   "dividend_events": 88,
+   "splits": [],
+   "valid_from": null
+  },
+  "GLD": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:08Z",
+   "sha256": "4375a319043d08dd90e7b2807f6c8214302ed996648a9ce2f996a9a55fe115f5",
+   "first_date": "2004-11-18",
+   "last_date": "2026-09-28",
+   "rows": 5498,
+   "dividend_events": 0,
+   "splits": [],
+   "valid_from": null
+  },
+  "EFA": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:08Z",
+   "sha256": "5364a7e7ae3ce9b24136112abccc27c6edb4aeccaf3cfb29eacff7d39034565b",
+   "first_date": "2001-08-27",
+   "last_date": "2026-09-28",
+   "rows": 6308,
+   "dividend_events": 47,
+   "splits": [
+    "2005-06-09"
+   ],
+   "valid_from": null
+  },
+  "DBC": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:09Z",
+   "sha256": "fbe8978bbf390d2329480894884a97c0e941314f7623f23aae6f736cd9141c0f",
+   "first_date": "2006-02-06",
+   "last_date": "2026-09-28",
+   "rows": 5193,
+   "dividend_events": 9,
+   "splits": [],
+   "valid_from": null
+  },
+  "BIL": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:09Z",
+   "sha256": "11fcbdd1a79fc6e19b73900116896c118ce5d095434e48275416529e61f2532f",
+   "first_date": "2007-05-30",
+   "last_date": "2026-09-28",
+   "rows": 4864,
+   "dividend_events": 127,
+   "splits": [
+    "2017-11-30"
+   ],
+   "valid_from": null
+  },
+  "SHV": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:10Z",
+   "sha256": "4f557f54b5dd5dfb580ca10f499c6d7ba52ac2a7f027048da59b689eacf19348",
+   "first_date": "2007-01-11",
+   "last_date": "2026-09-28",
+   "rows": 4959,
+   "dividend_events": 183,
+   "splits": [],
+   "valid_from": null
+  },
+  "VFINX": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:10Z",
+   "sha256": "b00afedd8facc9abce08533d8802d1bb1923fde74a6c5262c4a0adaf8ffadef5",
+   "first_date": "1980-01-02",
+   "last_date": "2026-09-28",
+   "rows": 11780,
+   "dividend_events": 187,
+   "splits": [],
+   "valid_from": "1987-01-01"
+  },
+  "VTSMX": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:11Z",
+   "sha256": "acbd27b4f430a917ae8984ab27075da414912be5c1ae47cf4a27dc098db7368b",
+   "first_date": "1992-04-27",
+   "last_date": "2026-09-28",
+   "rows": 8666,
+   "dividend_events": 136,
+   "splits": [],
+   "valid_from": null
+  },
+  "VFITX": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:11Z",
+   "sha256": "477495fee8caef47e80761f07d8a275767a81089ba289b93d3286715f2328871",
+   "first_date": "1991-10-28",
+   "last_date": "2026-09-28",
+   "rows": 8791,
+   "dividend_events": 434,
+   "splits": [],
+   "valid_from": null
+  },
+  "VBMFX": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:12Z",
+   "sha256": "6fd8a941351aeb07b6d84ccb8f2508a8e230a3d03cb1963710f3cbd635bad3ed",
+   "first_date": "1986-12-11",
+   "last_date": "2026-09-28",
+   "rows": 10024,
+   "dividend_events": 491,
+   "splits": [],
+   "valid_from": null
+  },
+  "VGSIX": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:12Z",
+   "sha256": "832029164dc6e301071eb9b2abf43fb26d5057d82356b1a03818ec6f790deec0",
+   "first_date": "1996-05-13",
+   "last_date": "2026-09-28",
+   "rows": 7643,
+   "dividend_events": 122,
+   "splits": [],
+   "valid_from": null
+  },
+  "VGTSX": {
+   "source": "yfinance",
+   "retrieved_utc": "2026-09-29T09:55:12Z",
+   "sha256": "6eb237dd026856e2176de9886f948eaffffea268e0a9855fa95475d3e7a24761",
+   "first_date": "1996-04-29",
+   "last_date": "2026-09-28",
+   "rows": 7653,
+   "dividend_events": 78,
+   "splits": [],
+   "valid_from": null
+  }
+ },
+ "splices": {
+  "SPY": {
+   "target": "SPY",
+   "proxy": "VFINX",
+   "accepted": true,
+   "splice_boundary": "1993-01-29",
+   "overlap_months": 404,
+   "correlation": 0.998391,
+   "min_corr": 0.995,
+   "er_adjust_bp_per_year": 4.55,
+   "first_date": "1987-01-02",
+   "reason": "accepted"
+  },
+  "AGG": {
+   "target": "AGG",
+   "proxy": "VBMFX",
+   "accepted": true,
+   "splice_boundary": "2003-09-30",
+   "overlap_months": 276,
+   "correlation": 0.97767,
+   "min_corr": 0.95,
+   "er_adjust_bp_per_year": 12.0,
+   "first_date": "1986-12-11",
+   "reason": "accepted"
+  },
+  "IEF": {
+   "target": "IEF",
+   "proxy": "VFITX",
+   "accepted": true,
+   "splice_boundary": "2002-07-31",
+   "overlap_months": 290,
+   "correlation": 0.982209,
+   "min_corr": 0.95,
+   "er_adjust_bp_per_year": 5.0,
+   "first_date": "1991-10-28",
+   "reason": "accepted"
+  },
+  "VNQ": {
+   "target": "VNQ",
+   "proxy": "VGSIX",
+   "accepted": true,
+   "splice_boundary": "2004-09-30",
+   "overlap_months": 264,
+   "correlation": 0.999359,
+   "min_corr": 0.995,
+   "er_adjust_bp_per_year": 13.0,
+   "first_date": "1996-05-13",
+   "reason": "accepted"
+  }
+ },
+ "samples": {
+  "long": {
+   "sources": {
+    "SPY": "SPY spliced with VFINX returns through 1993-01-29",
+    "AGG": "AGG spliced with VBMFX returns through 2003-09-30"
+   },
+   "splices": {
+    "SPY": {
+     "target": "SPY",
+     "proxy": "VFINX",
+     "accepted": true,
+     "splice_boundary": "1993-01-29",
+     "overlap_months": 404,
+     "correlation": 0.998391,
+     "min_corr": 0.995,
+     "er_adjust_bp_per_year": 4.55,
+     "first_date": "1987-01-02",
+     "reason": "accepted"
+    },
+    "AGG": {
+     "target": "AGG",
+     "proxy": "VBMFX",
+     "accepted": true,
+     "splice_boundary": "2003-09-30",
+     "overlap_months": 276,
+     "correlation": 0.97767,
+     "min_corr": 0.95,
+     "er_adjust_bp_per_year": 12.0,
+     "first_date": "1986-12-11",
+     "reason": "accepted"
+    }
+   },
+   "first_signal": "1988-07"
+  },
+  "proxy": {
+   "sources": {
+    "SPY": "SPY spliced with VFINX returns through 1993-01-29",
+    "AGG": "AGG spliced with VBMFX returns through 2003-09-30",
+    "EFA": "VGTSX substituted for EFA (whole period; no splice)",
+    "IEF": "IEF spliced with VFITX returns through 2002-07-31",
+    "VNQ": "VNQ spliced with VGSIX returns through 2004-09-30"
+   },
+   "splices": {
+    "SPY": {
+     "target": "SPY",
+     "proxy": "VFINX",
+     "accepted": true,
+     "splice_boundary": "1993-01-29",
+     "overlap_months": 404,
+     "correlation": 0.998391,
+     "min_corr": 0.995,
+     "er_adjust_bp_per_year": 4.55,
+     "first_date": "1987-01-02",
+     "reason": "accepted"
+    },
+    "AGG": {
+     "target": "AGG",
+     "proxy": "VBMFX",
+     "accepted": true,
+     "splice_boundary": "2003-09-30",
+     "overlap_months": 276,
+     "correlation": 0.97767,
+     "min_corr": 0.95,
+     "er_adjust_bp_per_year": 12.0,
+     "first_date": "1986-12-11",
+     "reason": "accepted"
+    },
+    "IEF": {
+     "target": "IEF",
+     "proxy": "VFITX",
+     "accepted": true,
+     "splice_boundary": "2002-07-31",
+     "overlap_months": 290,
+     "correlation": 0.982209,
+     "min_corr": 0.95,
+     "er_adjust_bp_per_year": 5.0,
+     "first_date": "1991-10-28",
+     "reason": "accepted"
+    },
+    "VNQ": {
+     "target": "VNQ",
+     "proxy": "VGSIX",
+     "accepted": true,
+     "splice_boundary": "2004-09-30",
+     "overlap_months": 264,
+     "correlation": 0.999359,
+     "min_corr": 0.995,
+     "er_adjust_bp_per_year": 13.0,
+     "first_date": "1996-05-13",
+     "reason": "accepted"
+    }
+   },
+   "first_signal": "1996-05"
+  },
+  "etf": {
+   "sources": {
+    "SPY": "SPY vendor series",
+    "AGG": "AGG vendor series",
+    "EFA": "EFA vendor series",
+    "IEF": "IEF vendor series",
+    "VNQ": "VNQ vendor series",
+    "DBC": "DBC vendor series"
+   },
+   "splices": {},
+   "first_signal": "2006-02"
+  }
+ },
+ "note": "Vendor price data is cached under data/ (gitignored) and never committed.",
+ "splice_rules": {
+  "SPY": {
+   "proxy": "VFINX",
+   "enabled": true,
+   "min_corr": 0.995,
+   "reason": "S&P 500 index fund"
+  },
+  "VTI": {
+   "proxy": "VTSMX",
+   "enabled": true,
+   "min_corr": 0.995,
+   "reason": "same index, investor share class"
+  },
+  "IEF": {
+   "proxy": "VFITX",
+   "enabled": true,
+   "min_corr": 0.95,
+   "reason": "intermediate Treasuries (5-10y vs 7-10y)"
+  },
+  "AGG": {
+   "proxy": "VBMFX",
+   "enabled": true,
+   "min_corr": 0.95,
+   "reason": "US aggregate bond index fund"
+  },
+  "BND": {
+   "proxy": "VBMFX",
+   "enabled": true,
+   "min_corr": 0.95,
+   "reason": "same index, investor share class"
+  },
+  "VNQ": {
+   "proxy": "VGSIX",
+   "enabled": true,
+   "min_corr": 0.995,
+   "reason": "same REIT index, investor share class"
+  },
+  "EFA": {
+   "proxy": "VGTSX",
+   "enabled": false,
+   "min_corr": 0.995,
+   "reason": "NOT spliced: total-international vs developed-ex-US failed validation (research correlation 0.984 < 0.995)"
+  },
+  "DBC": {
+   "proxy": null,
+   "enabled": false,
+   "min_corr": 0.995,
+   "reason": "NOT spliced: no valid commodity proxy"
+  },
+  "GLD": {
+   "proxy": null,
+   "enabled": false,
+   "min_corr": 0.995,
+   "reason": "no proxy; series starts at fund inception"
+  }
+ },
+ "DTB3": {
+  "series": "DTB3",
+  "source": "FRED fredgraph.csv (keyless)",
+  "retrieved_utc": "2026-09-29T09:55:13Z",
+  "sha256": "03ec32ba6230e1349f4062a0999a45722059afa2dbb78e7a5170b77e450a67b9",
+  "first_date": "1954-01-04",
+  "last_date": "2026-09-25",
+  "rows": 18175,
+  "units": "percent per year, discount basis",
+  "terms": "FRED content: not committed"
+ },
+ "FF_FACTORS": {
+  "series": "F-F_Research_Data_Factors (monthly)",
+  "source": "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_Factors_CSV.zip",
+  "retrieved_utc": "2026-09-29T09:55:13Z",
+  "sha256": "d7d7fe37b150b5b15c9c069b3ba101dfe1af568c6d7b5db6e73cd0a6c0c9e5e5",
+  "first_month": "1926-07-31",
+  "last_month": "2026-08-31",
+  "rows": 1202,
+  "units": "decimal after parsing"
+ }
+}

@@ -1,0 +1,73 @@
+name: paper-rebalance
+
+# Manual / API trigger ONLY. No `schedule:` on purpose: GitHub's cron is best
+# effort (documented delays of 1-9 hours and dropped runs in 2026). Trigger this
+# from an external scheduler (Cloudflare Workers cron or cron-job.org) calling
+# POST /repos/<owner>/<repo>/actions/workflows/paper-rebalance.yml/dispatches
+# with a fine-grained PAT scoped to this one repository, "Actions: write" only.
+# See docs/runbook-paper-trading.md. The runner is idempotent, so a duplicate or
+# late trigger is harmless; outside market hours it exits 0 and does nothing.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: paper-rebalance
+  cancel-in-progress: false
+
+jobs:
+  rebalance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install pinned dependencies
+        run: |
+          if [ -f requirements.lock ]; then
+            python -m pip install --require-hashes -r requirements.lock
+          elif [ -f requirements-hashed.txt ]; then
+            python -m pip install --require-hashes -r requirements-hashed.txt
+          else
+            python -m pip install -r requirements.txt
+          fi
+          python -m pip install --no-deps -e .
+
+      # PAPER keys only. Never store live keys in GitHub. LIVE_TRADING is never set here,
+      # so even a live key could not trade: the runner needs LIVE_TRADING=yes-live AND
+      # --live AND --i-understand-live.
+      #
+      # DRY RUN BY DEFAULT: this step prints the plan and submits nothing.
+      # To submit PAPER orders (after the dry runs look right for a few days), edit the
+      # command below and replace `--dry-run` with `--no-dry-run`, commit, and push.
+      # Revert that edit to go back to dry runs. Kill switches: set the repository
+      # variable KILL_SWITCH to anything but `off`, or commit a file named KILL_SWITCH.
+      - name: Paper rebalance (dry run)
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_PAPER_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_PAPER_API_SECRET_KEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
+          KILL_SWITCH: ${{ vars.KILL_SWITCH || 'off' }}
+          PAPER_STRATEGY: ${{ vars.PAPER_STRATEGY || 'spy_buy_hold' }}
+        run: |
+          python scripts/paper_rebalance.py --broker alpaca --strategy "$PAPER_STRATEGY" \
+            --dry-run --ledger "data/ledger/${PAPER_STRATEGY}.jsonl"
+
+      - name: Keep the shadow ledger (private artifact, 90 days)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: paper-ledger-${{ github.run_id }}
+          path: data/ledger/
+          if-no-files-found: ignore
+          retention-days: 90

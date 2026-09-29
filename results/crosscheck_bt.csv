@@ -1,0 +1,5 @@
+strategy,bt_schedule,months,max_abs_diff_bp,mean_abs_diff_bp,engine_cagr,bt_cagr,tolerance_bp,gated,passed
+buy_hold,first trading day (run_on_end_of_period=False),392,1.3322676295501878e-11,2.5036662085934653e-12,0.10897690212303779,0.10897690212303845,1.0,True,True
+buy_hold,month-end bar (run_on_end_of_period=True),392,376.59884431375576,0.9607113375375044,0.10897690212303779,0.10772260997923455,1.0,False,
+sma10,first trading day (run_on_end_of_period=False),392,3.4664271453266338e-06,3.537821339737887e-07,0.09275677305023078,0.09275677323648779,1.0,True,True
+sma10,month-end bar (run_on_end_of_period=True),392,721.2920068426265,17.860254278262616,0.09275677305023078,0.0966123751804977,1.0,False,

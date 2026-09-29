@@ -1,0 +1,14 @@
+{
+  "note": "Illustrative fixture: first deployment from an all-cash account into four equal sleeves. Made-up prices.",
+  "strategy": "sample_four_sleeves",
+  "universe": ["SPY", "EFA", "IEF", "GLD"],
+  "cash_symbol": null,
+  "allows_exit_to_cash": false,
+  "targets": {"SPY": 0.25, "EFA": 0.25, "IEF": 0.25, "GLD": 0.25},
+  "prices": {
+    "SPY": {"close": 571.20, "session": "2026-09-30", "prev_close": 568.35},
+    "EFA": {"close": 88.10, "session": "2026-09-30", "prev_close": 87.70},
+    "IEF": {"close": 95.40, "session": "2026-09-30", "prev_close": 95.62},
+    "GLD": {"close": 243.10, "session": "2026-09-30", "prev_close": 240.95}
+  }
+}

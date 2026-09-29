@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      PYTHONUNBUFFERED: "1"
+    steps:
+      # Actions are pinned to full commit SHAs (resolved 2026-09-29 with `git ls-remote --tags`).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install pinned dependencies
+        run: |
+          if [ -f requirements.lock ]; then
+            echo "installing hash-pinned requirements.lock"
+            python -m pip install --require-hashes -r requirements.lock
+          elif [ -f requirements-hashed.txt ]; then
+            echo "installing hash-pinned requirements-hashed.txt"
+            python -m pip install --require-hashes -r requirements-hashed.txt
+          else
+            echo "no hashed requirements file; installing exact pins from requirements.txt"
+            python -m pip install -r requirements.txt
+          fi
+          python -m pip install --no-deps -e .
+      - name: Tests (offline; no broker keys are available to this job)
+        run: python -m pytest -q

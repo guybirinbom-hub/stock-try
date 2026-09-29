@@ -2,7 +2,7 @@
 
 **Research report and build decision.** Prepared 2026-09-29 for the owner of this repository, who has no investing experience, will not risk meaningful money until a system is proven, and needs the running cost of any system to stay below what it can plausibly earn.
 
-This document is the judgment layer over roughly 620,000 words of verified research. It states what the evidence supports, what it rejects, and what this repository builds as a result. Every numbered claim below was checked by an independent adversarial reviewer against primary sources; corrections they required are applied here and listed in section 14.
+This document is the judgment layer over roughly 90,000 words of verified research. It states what the evidence supports, what it rejects, and what this repository builds as a result. Every numbered claim below was checked by an independent adversarial reviewer against primary sources; corrections they required are applied here and listed in section 14.
 
 ---
 
@@ -28,7 +28,7 @@ This document is the judgment layer over roughly 620,000 words of verified resea
 - Each output was handed to a separate adversarial Opus fact-checker instructed to *refute* every claim by opening the cited sources. Verdicts: confirmed, needs qualification, refuted, or unverifiable.
 - A completeness critic then identified gaps; four high-priority gaps (residency and tax, existing tools, a licence-compliant data pipeline, and live-execution safety) were researched and verified in a second round.
 - Totals: 21 agents, about 1,200 tool calls, about 2.7 million tokens. The cost of this research is a sunk design cost, paid once. It is not charged to the trading system's running cost, per the owner's rule, but see section 5 for why it is still relevant.
-- Verdict tally across 154 checked claims: 86 confirmed, 61 needs qualification, 7 refuted. Every refuted claim is corrected or removed below.
+- Verdict tally across 161 checked claims: 85 confirmed, 69 needs qualification, 7 refuted. Every refuted claim is corrected or removed below.
 
 ---
 
@@ -48,7 +48,7 @@ All returns are nominal, before tax, and hypothetical unless marked live. "Exces
 | — | Pairs trading and short-term reversal | Peer-reviewed | Profitability declined continuously; largely gone after realistic costs post-2002 (Do and Faff 2012). Needs shorting, which fractional and cash accounts do not allow. | Negative | **Rejected.** |
 | — | LLM per-trade decisions | See section 4 | See section 4 | Unproven; negative after token cost | **Rejected at runtime.** |
 
-**The base rate that frames everything.** On 888 algorithms built by Quantopian users, the backtest Sharpe ratio explained less than 2.5% of the variance in out-of-sample Sharpe, and the more backtests a user ran, the larger the gap between backtest and live results (Wiecki et al. 2016). Bank-marketed quantitative strategies lost a median 73% of their Sharpe ratio going live (Suhonen et al. 2017). A strategy that looks good in a backtest is, by default, overfit.
+**The base rate that frames everything.** On 888 algorithms built by Quantopian users, the backtest Sharpe ratio explained less than 2.5% of the variance in out-of-sample Sharpe, and the more backtests a user ran, the larger the gap between backtest and out-of-sample results (Wiecki et al. 2016). Bank-marketed quantitative strategies lost a median 73% of their Sharpe ratio going live (Suhonen et al. 2017). A strategy that looks good in a backtest is, by default, overfit.
 
 ---
 
@@ -64,7 +64,7 @@ All returns are nominal, before tax, and hypothetical unless marked live. "Exces
 - A hobbyist re-test of TradingAgents on Claude Haiku 4.5 and Opus 4.8 with anonymized inputs and 10 bp costs: the agent returned -0.9% vs +15.7% buy-and-hold on AAPL over Mar-Jun 2026, at about $3.70 for 13 decisions.
 - The strongest pro-LLM result (Chen and Pu, Jan 2026): an unnamed web-searching frontier model ranked Russell 1000 stocks daily from April 2025; the top-20 long-only portfolio showed 15.8-18.4 bp/day of factor alpha over about 158 trading days. That is a t-statistic of roughly 1.9 on the Sharpe ratio, in a strong rebound market, in an unrefereed preprint with no model named and no compute cost reported. It is a hypothesis, not evidence.
 
-**The look-ahead trap.** Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 have a training-data cutoff of June 2026. LLMs recall pre-cutoff market data essentially verbatim, and instructions to ignore it do not work (Lopez-Lira, Tang and Zhu 2025). Any backtest of a current model's judgment on dates before July 2026 is biased upward by an unknown amount and counts for nothing as proof. Only forward tests are clean, and a model retirement (Anthropic observed lifetimes: about 12 to 25 months) resets the clock. An LLM-dependent edge may never become statistically verifiable before its model is retired.
+**The look-ahead trap.** Claude Opus 5.5, Sonnet 5.5 and Fable 5.1 have a training-data cutoff of June 2026. LLMs recall pre-cutoff market data essentially verbatim, and instructions to ignore it do not work (Lopez-Lira, Tang and Zhu 2025). Any backtest of a current model's judgment on dates before July 2026 is biased upward by an unknown amount and counts for nothing as proof. Only post-cutoff tests on strictly point-in-time inputs are clean (for the 5.5 models, in practice only forward tests), and a model retirement (Anthropic observed lifetimes: about 12 to 25 months) resets the clock. An LLM-dependent edge may never become statistically verifiable before its model is retired.
 
 **Institutional practice.** Man Group's AlphaGPT uses LLM agents to generate, code and backtest signal ideas; every signal then passes the same human investment-committee review as human research. The LLM is a research assistant, not the trader.
 
@@ -108,7 +108,7 @@ Prices used (USD per million tokens, input / output, first-party API, verified 2
 
 **The one-time cost is real too.** At API prices this research and build is on the order of $50-150 or more; this session's research alone consumed about 2.7 million tokens. The owner excluded design cost from the constraint, which is reasonable, but maintenance (a code review after each dependency or model change, perhaps $10-30 a year) is a recurring cost and is budgeted in the acceptance gates. Below roughly $1,000 of capital, even a zero-token system does not recover its own design cost. This project is best understood as tuition and a validation harness, not an income engine.
 
-**Subscriptions.** Claude Pro or Max are fine for interactive design and maintenance sessions. They are the wrong tool for an unattended bot: a flat $240/yr needs $3,000 of capital at 8% just to break even, and Anthropic's consumer terms permit scripted access only via an API key.
+**Subscriptions.** Claude Pro or Max are fine for interactive design and maintenance sessions. They are the wrong tool for an unattended bot: a flat $240/yr needs $3,000 of capital at 8% just to break even, and Anthropic's consumer terms permit scripted access only via an API key or where Anthropic explicitly permits it.
 
 ---
 
@@ -119,7 +119,7 @@ Verified against Alpaca's fee schedule revised 2026-09-17.
 - **Fractional orders**: minimum $1 notional; market, limit, stop and stop-limit; time-in-force DAY only, so no opening or closing auction orders, which means fills will not equal the official close a backtest usually assumes. Not all symbols are fractionable. Fractional sells are long-only.
 - **Fees**: no commission. Pass-through SEC fee ($20.60 per million on sells, from 2026-04-04), FINRA TAF ($0.000195 per share on sells; paused at $0.00 for Oct-Dec 2026, though whether Alpaca passes the pause through is unverified) and CAT ($0.000003 per share on buys and sells). **Each fee type is aggregated per day and rounded up to $0.01.** Consequences:
 
-| Notional | Round-trip fees | As % of position |
+| Notional | Round-trip fees | All-in as % of position (fees plus a one-tick SPY spread) |
 |---|---|---|
 | $1 | $0.04 | **4.0%** |
 | $10 | $0.04 | 0.40% |
@@ -129,7 +129,7 @@ Verified against Alpaca's fee schedule revised 2026-09-17.
 
   A $1 account rebalanced monthly pays about 36-48% of its value in fees per year. The fee floor stops mattering at roughly $100-500.
 - **Dividends** on fractional positions are rounded to the nearest cent, so a $1 SPY position receives $0.00.
-- **Spreads**: SPY, QQQ, IWM and TLT trade at about one tick (0.1-1.3 bp); GLD is wider (about 1 bp median). Negligible next to the fee floor at tiny size.
+- **Spreads**: SPY, IWM and TLT trade at about one tick (0.1-1.3 bp; QQQ assumed similar, not measured); GLD is wider (about 1 bp median, several ticks). Negligible next to the fee floor at tiny size.
 - **Market impact**: a $100k order in SPY is about 0.2 bp; irrelevant.
 - **Regulation**: the pattern-day-trader $25,000 rule was replaced by intraday margin standards on 2026-06-04. Irrelevant for monthly rebalancing. Settlement is T+1.
 - **Non-US residents**: Alpaca accepts many countries (Canada excluded; others "contact support"), requires a W-8BEN, and charges $35 for an outbound international wire and 1.5% (max $40) for local-currency transfers. Your own bank adds $15-50 per wire. **A $1 to $100 live test is effectively unrecoverable for a non-US person.** Do the plumbing test in paper instead.
@@ -179,7 +179,7 @@ Beating a benchmark is harder still, because the test is on the *difference*: de
 The owner asked for assurance that expanding capital will not stop profits. The honest answer:
 
 - **Does not change**: market capacity for liquid ETFs below roughly $1-10 million; the signal logic; token cost (zero).
-- **Improves**: fee drag, which is a fixed few cents per day and shrinks as a percentage. The system is simulated at $1, $100, $1k, $10k and $100k with the real fee model so this is visible.
+- **Improves**: fee drag, which has a floor of a few cents per trading day (the SEC fee itself is proportional to sale value) and shrinks as a percentage. The system is simulated at $1, $100, $1k, $10k and $100k with the real fee model so this is visible.
 - **Gets worse**: taxes, because a trend switch realizes gains that buy-and-hold defers (modelled upper bound about 1 pp/yr for a US taxable account; zero inside a tax-free wrapper; depends entirely on country, see section 13); drawdowns in absolute dollars (a 50% drawdown is $50,000 on $100,000); behaviour, since abandoning a rule after years of lagging is the main documented way such plans fail.
 - **Cannot be assured by any tool**: that the edge exists and persists. Post-publication decay is the norm.
 
@@ -192,8 +192,8 @@ The design for scaling is therefore staged, not assured: paper trading at the in
 The owner asked whether to use, modify, or create a tool. Findings:
 
 - **For buy-and-hold with contributions, no code is needed.** Free recurring fractional purchases from $1 exist at Fidelity, Vanguard (its own ETFs), Robinhood, IBKR Lite (US only), Trading 212 (UK/EU) and Scalable Capital (EU). Cost: $0 plus the fund fee.
-- **No broker-native feature automates a trend filter.** Composer (US only, $0 starter tier, $50 minimum per strategy, recently acquired by SoFi with pricing undisclosed) is the only no-code tool that can, and it fails the $1 test.
-- **Every subscription platform fails the cost test below about $10k**: M1 $36/yr, Betterment $60/yr under $24k, Composer Advanced $120/yr, QuantConnect live roughly $400-1,000/yr, TradingView-plus-bridge roughly $650-1,200/yr. Robo-advisors charge 0.2-0.9%/yr to do what a $0 recurring plan does.
+- **No broker-native recurring or pie feature automates a trend filter.** Composer (US only, $0 starter tier, $50 minimum per strategy, recently acquired by SoFi with pricing undisclosed) is the only no-code tool found that can (broker one-shot conditional orders might partially automate a switch; unverified), and it fails the $1 test.
+- **Every subscription platform fails the cost test below about $10k**: M1 $36/yr, Betterment $60/yr under $24k without a $200/month deposit, Composer Advanced $120/yr, QuantConnect live roughly $400-1,000/yr, TradingView-plus-bridge roughly $650-1,200/yr. Robo-advisors charge 0.2-0.9%/yr to do what a $0 recurring plan does.
 - **Open-source**: `bt` (MIT, released 2026-09-12) is the best maintained periodic-rebalance backtester and is used here as the independent cross-check engine. `vectorbt` is fast but carries a Commons Clause. `backtrader` (last release 2023) and `pylivetrader` (2022) are abandoned. `nautilus_trader` needs Python 3.12+. `Lumibot` runs backtest and live from one class but pulls in LLM SDKs, stealth-browser tooling and a proxy scraper, which is an unacceptable supply-chain surface for something holding broker keys. `alpaca-py` is the official SDK, but it auto-retries POST requests on 429 and 504 with no timeout, which can duplicate orders; the runner works around this.
 - **Free backtest cross-checks**: Ken French monthly market data (1926+, keyless) for an independent index-level check; testfol.io and Portfolio Visualizer for eyeball checks only (undisclosed data construction, no cost field respectively).
 
@@ -205,12 +205,12 @@ The owner asked whether to use, modify, or create a tool. Findings:
 
 | Concern | Decision | Why |
 |---|---|---|
-| Historical data | `yfinance` primary (works from this container; SPY from 1993, dividend-adjusted), raw Yahoo chart API as fallback, local CSV cache that is **not committed**; optional Tiingo free token as a licensed second vendor; FRED T-bill yields for cash return | Yahoo's terms restrict automated collection, so it is a personal-use research source, not a redistributable one. Tiingo's free tier is personal-use only. Neither may be committed to git. |
+| Historical data | `yfinance` primary (works from this container; SPY from 1993, dividend-adjusted), raw Yahoo chart API as fallback, local CSV cache that is **not committed**; optional Tiingo free token as a licensed second vendor; FRED T-bill yields for cash return | Yahoo's terms forbid automated collection without Yahoo's express permission (and access needs a browser user agent), so it is at most a personal-use research source, not a redistributable one. Tiingo's free tier is personal-use only. Neither may be committed to git. |
 | Backtester | Custom pandas engine (explicit t+1 execution, per-instrument spread, Alpaca fee model, cash yield), cross-checked against `bt` on buy-and-hold and one trend rule with a stated tolerance | LLM-written backtesters are exactly where look-ahead bugs hide; an independent engine catches them. |
-| Universe | Long-lived liquid US ETFs (SPY or VTI, IEF, AGG or BND, VNQ, GLD, EFA, DBC) with Vanguard mutual-fund proxies for pre-inception history where the splice validates | Survivorship-free by construction; full-history sample from 1996-05 covers 2000-02, 2008, 2020 and 2022 |
-| Broker | Alpaca paper (free, global, fractional) for plumbing; Alpaca live only if the owner is in a supported country with cheap funding | Only broker with a free, cron-drivable paper API |
-| Scheduler | Not GitHub Actions cron alone: documented delays of 1-9 hours and dropped days in 2026. Use an external free trigger (Cloudflare Workers cron or cron-job.org) firing `workflow_dispatch`, or a local machine, plus a dead-man alert | The runner is idempotent so extra or late triggers are harmless |
-| Safety | Broker-side: margin multiplier 1, shorting off, options off, trade-confirmation email on. Code-side: dry-run default, two independent flags for live, deterministic `client_order_id` with lookup before submit, SDK auto-retry disabled on order submission, market-hours gate, per-order and per-day notional caps, stale-data refusal, file and broker-side kill switches, no LLM in the order path, SHA-pinned CI actions, hash-pinned dependencies, private repository | Every one of these maps to a documented loss (Knight Capital 2012: $460M in 45 minutes from dead code and no automated caps; Citigroup 2022: $444bn order from a units-vs-notional field error) |
+| Universe | Long-lived liquid US ETFs (SPY or VTI, IEF, AGG or BND, VNQ, GLD, EFA, DBC) with Vanguard mutual-fund proxies for pre-inception history where the splice validates | Free of delisting bias by construction (the sleeves themselves were chosen with hindsight); the fund-only sample from 1996-05 covers 2000-02, 2008, 2020 and 2022 for US equity, bonds, Treasuries, REITs and cash, while the international (EFA), commodity (DBC) and gold (GLD) sleeves have no validated pre-ETF proxy history |
+| Broker | Alpaca paper (free, global, fractional) for plumbing; Alpaca live only if the owner is in a supported country with cheap funding | Only free, cron-drivable paper API open globally with just an email (Trading 212's beta demo API serves only its own UK/EU/AU customers) |
+| Scheduler | Not GitHub Actions cron alone: reported delays of 1-14 hours and dropped days in 2026. Use an external free trigger (Cloudflare Workers cron or cron-job.org) firing `workflow_dispatch`, or a local machine, plus a dead-man alert | The runner is idempotent so extra or late triggers are harmless |
+| Safety | Broker-side: margin multiplier 1, shorting off, options off, trade-confirmation email on. Code-side: dry-run default, two independent flags for live, deterministic `client_order_id` with lookup before submit, SDK auto-retry disabled on order submission, market-hours gate, per-order and per-day notional caps, stale-data refusal, file and broker-side kill switches, no LLM in the order path, SHA-pinned CI actions, hash-pinned dependencies, private repository | Every one of these maps to a documented loss (Knight Capital 2012: over $460M lost after 45 minutes of runaway orders from dead code and no automated caps; Citigroup 2022: $444bn order from a units-vs-notional field error) |
 | LLM at runtime | None | Section 5 |
 
 ---
@@ -264,7 +264,7 @@ Residency was not stated, and it decides more than any strategy choice. Before a
 - **Instruments**: EU-regulated brokers block US-domiciled ETFs (SPY, VTI) for retail clients under PRIIPs; UK rules are in transition through June 2027 and US ETFs remain generally unavailable there. UCITS equivalents (for example CSPX, VWCE) are used instead; backtests must then be re-run on the instrument actually held.
 - **Tax on each trend switch**: US short-term gains at ordinary rates with a 30-day wash-sale rule; UK CGT 18-24% with a £3,000 allowance; Germany 26.375% with a 30% equity-fund exemption and €1,000 allowance; France 31.4% flat; Ireland 38% exit tax on funds with no loss relief (the overlay is tax-hostile there); Israel 25% on real gains; Netherlands a deemed-return tax where switching has no consequence. Inside an ISA, Roth IRA or TFSA the drag is zero. Small accounts often fall under annual allowances.
 - **Dividend withholding on US funds**: 15% for most treaty countries, 25% for Israel and India, 30% otherwise, via W-8BEN.
-- **US estate tax** applies to non-US persons' US-situs holdings above $60,000, with treaty relief for some countries and none for Israel or India. Irish-domiciled funds avoid it.
+- **US estate tax**: non-US persons must file a US estate-tax return when US-situs holdings exceed $60,000, with treaty relief for some countries and (unverified) none for Israel or India. Irish-domiciled funds avoid it.
 - **Reporting burden**: a foreign-broker account usually means self-assessment; an accountant's fee ($270-800 a year in some countries) can exceed the excess profit on accounts under tens of thousands of dollars.
 
 The repository ships one broker adapter (Alpaca) and a local simulator. A second adapter is added only once the country is known.
@@ -290,6 +290,9 @@ The adversarial checks changed the following, and the text above reflects the co
 - Yahoo Finance is reachable from this container only with a browser user agent; automated collection sits outside Yahoo's terms, so it is treated as personal-use research data and never committed. FRED's terms forbid archiving its content, so FRED downloads are not committed either.
 - The international-equity and commodity backfills proposed by the data researcher failed their own splice-validation rules (correlations 0.984 and 0.906) and are not used; only the 1996-05 fund-only sample is trusted.
 - growney's fee at €10k is 0.68%, not 0.38%; a "GitHub Environment secrets with required reviewers on a free private repo" recommendation was removed because that feature is not available on the free plan for private repositories.
+- A final fact-check pass corrected the verdict tally (161 claims: 85 confirmed, 69 needs qualification, 7 refuted) and the research volume (about 90,000 words), and noted that the fee table's percentages include a one-tick spread.
+- Composer is the only no-code trend tool found, not proven the only one; GitHub cron delays were reported up to 14 hours, not 9; Yahoo's terms forbid, not merely restrict, automated collection.
+- The 1996-05 fund-only sample covers US equity, bonds, Treasuries, REITs and cash only; the international, commodity and gold sleeves have no validated pre-ETF history.
 
 ---
 

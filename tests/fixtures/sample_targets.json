@@ -1,0 +1,18 @@
+{
+  "note": "Illustrative fixture for the simulator and tests. Prices are made-up round numbers, not market data.",
+  "strategy": "sample_three_asset",
+  "universe": ["SPY", "IEF", "GLD"],
+  "cash_symbol": null,
+  "allows_exit_to_cash": false,
+  "targets": {"SPY": 0.5, "IEF": 0.3, "GLD": 0.2},
+  "prices": {
+    "SPY": {"close": 571.20, "session": "2026-09-30", "prev_close": 568.35},
+    "IEF": {"close": 95.40, "session": "2026-09-30", "prev_close": 95.62},
+    "GLD": {"close": 243.10, "session": "2026-09-30", "prev_close": 240.95}
+  },
+  "dividends": {
+    "SPY": [["2026-09-18", 1.83]],
+    "IEF": [["2026-09-01", 0.29]]
+  },
+  "sim_initial_weights": {"SPY": 0.56, "IEF": 0.27, "GLD": 0.15}
+}
