@@ -13,6 +13,8 @@ import pytest
 import requests
 from requests.adapters import BaseAdapter
 
+from stocktry.execution.broker import BrokerError
+
 pytest.importorskip("alpaca")
 
 import alpaca.common.constants as alpaca_constants  # noqa: E402
@@ -176,7 +178,10 @@ def test_notional_is_sent_as_exact_string_without_qty():
 
 def test_paper_is_default_and_live_needs_env_and_flag():
     assert AlpacaBroker(env=ENV).base_url == "https://paper-api.alpaca.markets"
-    b = AlpacaBroker(env=ENV, live=True)  # flag without env -> paper
+    # flag without env -> refused (EXEC-07: it used to fall back to a paper client, silently)
+    with pytest.raises(BrokerError, match="LIVE_TRADING"):
+        AlpacaBroker(env=ENV, live=True)
+    b = AlpacaBroker(env=ENV)
     assert not b.is_live and b.base_url == "https://paper-api.alpaca.markets"
     b = AlpacaBroker(env={**ENV, "LIVE_TRADING": "yes-live"})  # env without flag -> paper
     assert not b.is_live

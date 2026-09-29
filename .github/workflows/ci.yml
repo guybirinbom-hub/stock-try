@@ -26,18 +26,18 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - name: Install pinned dependencies
+      - name: Install hash-locked dependencies and the package
         run: |
-          if [ -f requirements.lock ]; then
-            echo "installing hash-pinned requirements.lock"
-            python -m pip install --require-hashes -r requirements.lock
-          elif [ -f requirements-hashed.txt ]; then
-            echo "installing hash-pinned requirements-hashed.txt"
-            python -m pip install --require-hashes -r requirements-hashed.txt
-          else
-            echo "no hashed requirements file; installing exact pins from requirements.txt"
-            python -m pip install -r requirements.txt
+          if [ ! -f requirements.lock ]; then
+            echo "requirements.lock is missing: refusing to install unpinned dependencies"
+            exit 1
           fi
-          python -m pip install --no-deps -e .
-      - name: Tests (offline; no broker keys are available to this job)
+          python -m pip install --require-hashes -r requirements.lock
+          python -m pip install --no-deps --no-build-isolation -e .
+          python -c "import stocktry, alpaca, bt; print('stocktry installed from', stocktry.__file__)"
+      # The whole suite, offline: tests/conftest.py blocks every non-local socket connection, the data cache
+      # (data/, gitignored) is absent in CI and no test needs it, and no broker keys exist in this job.
+      - name: Tests (offline; no broker keys, no data cache)
+        env:
+          STOCKTRY_DATA_DIR: ${{ runner.temp }}/no-data-cache
         run: python -m pytest -q

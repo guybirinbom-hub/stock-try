@@ -15,10 +15,16 @@ committed. `results/data_manifest.json` records each series' source, retrieval t
 decisions (hashes only, no prices).
 
 **Adjustment.** `close` is the vendor's adjusted close (splits and distributions reinvested); `open`, `high`, `low`
-are multiplied by the same factor `Adj Close / Close`, so all four are on one total-return scale. `close_raw` is the
-as-traded close and `dividend` the cash distribution on its ex-date. Each symbol is cached as one CSV plus a
-manifest (source, retrieved_utc, sha256 of the file, first/last date, rows, split dates); a cache file whose hash no
-longer matches its manifest is refused.
+are multiplied by the same factor `Adj Close / Close`, so all four are on one total-return scale. `close_raw` is
+Yahoo's `Close` with `auto_adjust=False`, which is **split-adjusted** (not the literal as-traded print: splits are
+back-adjusted, distributions are not), and `dividend` the cash distribution on its ex-date. Before a split, share
+counts and per-share fees computed from `close_raw` would therefore be off by the split ratio; no traded series has
+a split inside the period it is traded (EFA 2005-06-09 is before its 2006 ETF-sample start; VTI 2008 and BIL 2017
+are unused), so no result is affected. Each symbol is cached as one CSV plus a manifest (source, retrieved_utc,
+sha256 of the file, first/last date, rows, split dates). Every cache read -- bars, DTB3 and the Ken French file,
+including the stale fallbacks after a network failure -- checks the file against its manifest hash and refuses a
+mismatch or a missing manifest. A series whose refresh failed and fell back to an old cache (manifest `stale`) is
+refused by the panel builder. Ken French missing-value codes (-99.99, -999) are read as missing, never as returns.
 
 **Quality gates** (`stocktry.data.quality`; any failure raises and stops the backtest):
 
@@ -27,13 +33,15 @@ longer matches its manifest is refused.
 | rows | at least 20 |
 | dates | strictly increasing |
 | prices | open/high/low/close/close_raw all positive and finite |
-| jumps | no \|daily as-traded return\| > 50% unless the date carries a split flag |
-| stale prices | no run of 5+ identical consecutive closes on an equity, international-equity or REIT fund |
-| spacing | median gap between bars at most 1 business day |
+| jumps | no \|daily `close_raw` return\| > 50% unless the date carries a split flag; the same 50% limit on the adjusted series the engine trades (close to close, previous close to open, open to close) |
+| adjusted vs as-traded | on every date `f_t / f_(t-1) = 1 / (1 - dividend_t / close_raw_(t-1))` within 0.1%, with `f = close / close_raw` (adjusted and as-traded returns differ only by the day's distribution; split-flagged dates and rows without `close_raw` skipped). Catches a corrupted adjusted close or open whose `close_raw` is clean; the cached series agree to about 1e-6 |
+| stale prices | no run of 5+ identical consecutive closes, on `close_raw` or the adjusted close, on an equity, international-equity or REIT fund |
+| spacing | median gap between bars at most 1 business day, and no gap longer than 3 business days except across a known exchange closure (9/11: 2001-09-11..14; Hurricane Sandy: 2012-10-29..30) |
 | dividends | a regular payer has at least one distribution in every full calendar year |
 | TR vs PR | per full year, total return minus price return within a band per asset class (e.g. equity -0.25%..10%, bonds -0.25%..16%); regular payers at least +0.10% |
 
-All 17 universe series pass. The gates do **not** catch every vendor error: see the VFINX case below.
+All 17 universe series pass (their longest gap outside 9/11 is 3 business days). The gates do **not** catch
+every vendor error: see the VFINX case below.
 
 **Splicing** (`stocktry.data.universe`). An ETF's pre-inception history may be extended with a Vanguard
 mutual-fund proxy *on returns*, at a month boundary: daily proxy returns are used up to and including the ETF's
@@ -51,6 +59,9 @@ distributions. VFINX rows before 1987-01-01 are therefore dropped (`SymbolMeta.v
 
 **Samples** (`stocktry.backtest.samples`). Each starts in cash at the close of its first signal month-end; monthly
 returns start the next month and end at the last month complete for every series (2026-08 at the time of writing).
+A series is forward-filled only between its first and last real bar (a missing day inside it is carried forward),
+never past its last bar: a series that stops early ends the panel early instead of being carried flat, and the
+engine refuses an explicit end date after any traded series' last bar.
 
 | sample | data | first signal | strategies |
 |---|---|---|---|
@@ -69,8 +80,9 @@ sleeves until 1997-02 in the proxy sample; DBC until 2006-11 in the ETF sample).
 * **Execution**: the next trading day at its adjusted **open** (default) or adjusted **close** (`fill="next_close"`).
   `extra_lag_days` delays execution further (one-bar-shift test).
 * **Same-bar fill** (`same_bar_fill=True`) fills at the signal bar's own close: that is look-ahead, and it exists only
-  for the leakage tests. No command-line option can set it; results are flagged `leaky`, and the trial ledger refuses
-  them.
+  for the leakage tests. No command-line option can set it; results are flagged `leaky`, and both the trial ledger
+  (whose `leaky=` argument is required, so no caller can forget it) and the report layer (`metrics.summarize`, the
+  entry point of every table) refuse them.
 * **Monthly anchors** (`stocktry.backtest.schedule`): offset -1 is the last trading day of the month; offset k >= 0 is
   the k-th trading day of the month (0-based, clamped to the last). Monthly lookbacks (SMA, momentum) are sampled at the
   same anchors. Both rules are causal (tested): on data truncated at an anchor they reproduce the full-data anchors up
@@ -82,10 +94,17 @@ sleeves until 1997-02 in the proxy sample; DBC until 2006-11 in the ETF sample).
 
 * Holdings are units of the **adjusted** price series, so distributions are reinvested; the SPY benchmark runs through
   the same engine on the same adjusted series, so strategy and benchmark are both total return.
-* Order sizes use **as-traded** prices (`close_raw / close` converts adjusted to as-traded dollars; 1.0 inside spliced
-  proxy segments). Sells are quantity orders (fractional shares truncated to 9 decimals). Buys are dollar-notional orders,
-  rounded down to the cent, that pay the ask (mid x (1 + half-spread)); the spread shows up as fewer units. Sells run
-  first; if buys exceed the cash, all buys are scaled down pro rata.
+* Order sizes use **as-traded** prices (`close_raw / close` converts adjusted to split-adjusted as-traded dollars; 1.0
+  inside spliced proxy segments). Sells are quantity orders (fractional shares truncated to 9 decimals) filled at the bid
+  (mid x (1 - half-spread)); a sell's notional in the trades table, and the base of the SEC fee, is those proceeds.
+  Buys are dollar-notional orders, rounded down to the cent, that pay the ask (mid x (1 + half-spread)); the spread shows
+  up as fewer units. Sells run first; if buys exceed the cash, all buys are scaled down pro rata.
+* **Fee reserve.** Regulatory fees are debited after the day's orders, but buys never spend the cash those fees need:
+  if the day's buys would leave less cash than the day's fees, they are re-sized from `cash - fees`. Cash therefore
+  never goes negative, and no cent-sized sell is ever generated just to cover a fee debit (without this, allowing sells
+  of any size would make a fully invested small account sell a cent a month and pay $0.03 in fees for it). The paper
+  runner keeps a similar cash buffer (the larger of $0.10 and 0.1% of equity) for the same reason; at $10,000 the
+  difference is a few dollars of cash.
 * `whole_shares=True` rounds each target position **down** to whole as-traded shares; the rest stays in cash. Dividends
   between rebalances are still reinvested by the adjusted-price accounting (slightly flattering whole-share runs).
 * **Cash** earns the T-bill daily accrual: on each trading day the balance grows by `DTB3(previous trading day) / 100 / 252`
@@ -111,9 +130,13 @@ sleeves until 1997-02 in the proxy sample; DBC until 2006-11 in the ETF sample).
   trip on separate days costs $0.04; a $10,000 sell of 20 shares costs SEC $0.21 + TAF $0.01 + CAT $0.01; two $1 sells
   on the same day share one cent per fee type.
 * **Commissions** for other brokers: per order `max(flat + bps x notional, minimum)`; zero by default.
-* **$1 minimum**: orders below $1 are skipped and logged, except a sell that closes the whole position (modelled as the
-  broker's close-position request; that the minimum does not apply to it is an assumption).
-* The same rule is simulated at $1, $100, $1,000, $10,000 and $100,000 (`results/scaling.md`).
+* **$1 minimum, buys only**: Alpaca documents "a minimum 1 USD notional amount for Buy entry orders". Buys below $1 are
+  skipped and logged. Sells have no dollar minimum: a partial sell (trim) is sent when it is at least one cent (a notional
+  order is whole cents); a full exit sells the whole position, any size, as a quantity order. So a small account trims
+  over-weight positions it cannot top up (the top-up buy is below $1): the proceeds wait in cash until a buy reaches $1.
+  A $1.00 account cannot buy $1.00 of anything, because the fee reserve keeps back the $0.01 CAT fee.
+* The same rule is simulated at $1, $100, $1,000, $10,000 and $100,000 (`results/scaling.md`). The paper runner applies
+  the same rule (planner, guards and simulator).
 * **Not modelled**: taxes, market impact (negligible for these ETFs at these sizes), dividend withholding, the rounding
   of fractional dividends to the cent, commissions of the pre-2019 era, and historical SEC/TAF rates.
 
@@ -123,7 +146,8 @@ Annualized from monthly returns: CAGR = prod(1 + r)^(12/n) - 1; volatility = sam
 Sharpe = mean(r - rf) / sd(r - rf) x sqrt(12) against T-bills; Sortino uses the root mean square of negative excess
 returns over all months. Max drawdown is taken from daily closes (deeper than month-end); duration is the longest spell
 in months below a month-end peak. Calmar = CAGR / |MaxDD|. Beta, correlation and tracking error are against SPY
-buy-and-hold. Turnover per year = (buys + sells) / equity summed per year, excluding the initial purchase. Switches per
+buy-and-hold. Turnover per year = (buys + sells) / equity summed per year, excluding the initial purchase (the first
+rebalance that placed any order, which for a rule that starts in cash is later than the first rebalance). Switches per
 year = rebalances whose target weights changed. Regime slices compound the named months, both ends inclusive. Every
 formula is unit-tested against hand-computed numbers (`tests/test_backtest_metrics.py`).
 
@@ -139,12 +163,18 @@ formula is unit-tested against hand-computed numbers (`tests/test_backtest_metri
 * **Bootstrap** (`bootstrap.py`): Politis-Romano stationary bootstrap, mean block 6 months, 2,000 paths, seed 20260929,
   strategy / SPY / T-bill months resampled jointly; 5th, 50th and 95th percentiles of CAGR, Sharpe and drawdown magnitude.
 * **Trial ledger** (`ledger.py`, `results/trial_ledger.json`): every backtest variant run by `run_backtests.py`
-  (strategy family, parameters, sample, and per configuration T, Sharpe, skew, kurtosis, CAGR, MaxDD, timestamps).
-  Trials are keyed by family + parameters + sample and are never removed; re-runs only update them.
+  (strategy family, parameters, sample, and per configuration T, Sharpe, skew, kurtosis, CAGR, MaxDD and the time those
+  statistics were recorded). Trials are keyed by family + parameters + sample and are never removed. A run record is
+  rewritten only when a statistic changes, so re-running unchanged code on unchanged data leaves the file (and every
+  other file in `results/` except the date stamps) byte-identical.
 * **Deflated Sharpe ratio** (`dsr.py`): Bailey & Lopez de Prado (2014) with the empirical cross-trial variance of Sharpe
   ratios from the ledger, per-period units, skew/kurtosis adjustment, T - 1 in the square root. It reproduces the paper's
   worked example exactly (DSR 0.9004 with N = 100, 0.9505 with N = 46; `tests/test_validation_dsr.py`). Reported with N =
-  all trials on the sample (used for the gate) and N = the strategy's own family.
+  all trials on the sample (used for the gate) and N = the strategy's own family. **The null is a true Sharpe of zero
+  versus T-bills** (after the multiple-testing hurdle), not "no better than buy-and-hold": SPY buy-and-hold itself
+  scores about 0.95, so the DSR half of A4 is nearly non-binding and PBO does its rejecting. The gate is kept as
+  pre-registered; as a supplementary, non-gating diagnostic `dsr_pbo.md` also reports the information ratio of monthly
+  returns over SPY buy-and-hold and the probability (PSR, no multiple-testing correction) that it is above zero.
 * **PBO** (`pbo.py`): CSCV with S = 16 blocks and all 12,870 splits (vectorized, no sampling), Sharpe as the performance
   measure. Grids: SPY trend (SMA and absolute momentum, lookbacks 3..18: 32 configurations), GTAA-4 in the proxy sample
   (16 lookbacks x 22 signal days: 352), GTAA in the ETF sample (16 lookbacks + 21 signal days: 37).
@@ -152,7 +182,11 @@ formula is unit-tested against hand-computed numbers (`tests/test_backtest_metri
   series within 1 bp/yr; (b) perfect foresight of the next monthly bar: with the engine's lag the oracle's Sharpe is
   within 3 standard errors of zero on a zero-drift random walk (alpha |t| < 3 on real SPY), and only a forced same-bar
   fill makes it "huge" (> 10 standard errors, alpha t > 10); (c) foresight of the overnight gap under the default
-  next-open fill: never captured through the normal path; (d) one-day extra execution delay for each candidate. A
+  next-open fill: never captured through the normal path; (d) one-day extra execution delay for each candidate (a
+  sensitivity number: a small leak in a slow monthly rule barely moves its Sharpe); (e) future tamper for each candidate
+  on its real panel: every price after a mid-sample signal date is multiplied by 1.7 and, separately, by 0.3, and the
+  T-bill rate after it by 5; every target up to and including that signal must be unchanged, and the engine must never
+  hand the strategy a row dated after its as-of date (checked by wrapping the strategy before its own truncation). A
   long-only oracle sits in cash half the time, so its Sharpe is bounded near 2.4; significance, not a fixed Sharpe
   level, defines "huge".
 * **Cross-checks** (`crosscheck.py`): bt 1.2.3 reproduces buy-and-hold SPY and the 10-month SMA (first-trading-day
@@ -171,11 +205,13 @@ formula is unit-tested against hand-computed numbers (`tests/test_backtest_metri
 | A5 | plateau statistic >= 0.70 (not applicable to the ensemble) |
 | A6 | bootstrap 5th-percentile CAGR > 0 **and** 95th-percentile drawdown magnitude <= SPY's |
 | A7 | calendar 2008 and 2022 returns above SPY's **and** CAGR above SPY's in at least 2 of the last three non-overlapping 60-month windows |
-| A8 | identity and synthetic foresight/gap tests pass **and** |Sharpe change| <= 0.15 under a one-day extra execution delay |
+| A8 | identity and synthetic foresight/gap tests pass **and** the candidate's future-tamper test passes **and** |Sharpe change| <= 0.15 under a one-day extra execution delay |
 
 The report's wording for A8 ("the one-bar-shift test collapses its performance toward the benchmark") is read as:
 a leaky edge would collapse under an extra bar of delay, a genuine slow rule should not change; the check is that
-the candidate's Sharpe does not depend on the signal bar.
+the candidate's Sharpe does not depend on the signal bar. The future-tamper test was added to A8 after the first
+harness run (adversarial review CORE-10) because the delay test alone cannot see a small leak in a slow rule; it only
+makes the gate stricter, and every candidate passes it.
 
 Candidates are gated on their primary sample: the proxy sample for the SPY trend rules and GTAA-4, the ETF-only sample
 for GTAA-5.
@@ -203,3 +239,16 @@ count in every disclosure block is the number of variants tried; the more varian
 * The T-bill series is the 3-month bill; French RF is the 1-month bill (they diverge in rapid rate cuts).
 * Whole-share mode reinvests dividends between rebalances (adjusted-price accounting) and fractional-dividend rounding
   at the broker is not modelled, so the smallest accounts look slightly better than they would.
+* The tranched GTAA portfolio is 21 independent sub-account runs of $10,000/21. Alpaca's per-day cent rounding and the $1
+  buy minimum are applied per sub-account, although in short months several clamped offsets trade on the same day and
+  would share one rounding in a single account (tranched costs are slightly overstated), and offset k starts investing
+  on the k-th trading day after the first signal month, so the by-offset comparison is not exactly the same exposure
+  window. The tranched CAGR is within 0.1-0.2 percentage points of the month-end run, so neither changes a conclusion.
+* The pre-registered Ken French correlation check (>= 0.99 for SPY against the CRSP total market) is tighter than the
+  S&P 500 / total-market relationship allows (SPY 0.987; total-market funds pass at 0.999). It is reported as a FAIL
+  with that diagnosis and was not changed retroactively; a future pre-registration should compare SPY with an S&P 500
+  total-return series or apply the check to total-market funds only. It is informational (not part of Gate A.8).
+* Small accounts pay for precision: since sells have no minimum, a $100 multi-asset account trims every over-weight
+  sleeve each month (fees are rounded up to the cent per type per day) while the matching sub-$1 top-up buys wait.
+  A no-trade band would reduce this, but it would be a new strategy parameter and is not part of the pre-registered
+  rules.

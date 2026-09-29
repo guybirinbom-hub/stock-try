@@ -14,7 +14,7 @@ from typing import Any, Mapping
 from .alerts import Alerter
 from .planning import PriceQuote
 from .runner import RunConfig, RunResult, rebalance_once
-from .sessions import ET, due_rebalance_date, make_rebalance_id, previous_session, sim_nyse_calendar
+from .sessions import ET, due_rebalance_date, make_rebalance_id, previous_session
 from .simbroker import LocalSimBroker
 
 __all__ = [
@@ -73,7 +73,7 @@ def quotes_for(
 ) -> dict[str, PriceQuote]:
     """Quotes dated ``session`` (default: last completed session at sim now) at the sim prices."""
     if session is None:
-        cal = sim_nyse_calendar(date(2026, 1, 1), date(2027, 12, 31))
+        cal = broker.get_calendar(date(2024, 1, 1), date(2027, 12, 31))
         today = broker.now.astimezone(ET).date()
         done = [c.date for c in cal if c.close <= broker.now]
         session = max(done) if done else previous_session(cal, today)
@@ -126,7 +126,7 @@ class Scenario:
     def refresh(self) -> None:
         """Re-date quotes and the due rebalance id after moving the sim clock."""
         self.quotes = quotes_for(self.broker)
-        cal = sim_nyse_calendar(date(2026, 1, 1), date(2027, 12, 31))
+        cal = self.broker.get_calendar(date(2024, 1, 1), date(2027, 12, 31))
         self.rebalance_id = make_rebalance_id(self.cfg.strategy, due_rebalance_date(cal, self.broker.now))
 
 

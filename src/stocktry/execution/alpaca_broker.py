@@ -3,9 +3,11 @@
 Safety properties
 -----------------
 * Paper by default. A live client is built only when BOTH ``live=True`` is
-  passed AND env ``LIVE_TRADING=yes-live``; otherwise a paper client is built
-  (with a warning if live was requested). The runner separately requires the
-  ``--i-understand-live`` flag before it will submit to a live broker.
+  passed AND env ``LIVE_TRADING=yes-live``. ``live=True`` without the env var
+  **raises** (it never falls back to a paper client: an admin action such as
+  hardening or the broker kill switch would otherwise silently act on the
+  wrong account). The runner separately requires the ``--i-understand-live``
+  flag before it will submit to a live broker.
 * Keys come only from env ``APCA_API_KEY_ID`` / ``APCA_API_SECRET_KEY``; they
   are never stored on this object, logged or included in exceptions.
 * alpaca-py's ``RESTClient._request`` retries *any* request (including
@@ -164,8 +166,8 @@ class AlpacaBroker:
             raise BrokerError("APCA_API_KEY_ID and APCA_API_SECRET_KEY must be set in the environment")
         use_live = bool(live) and env.get(LIVE_ENV) == LIVE_ENV_VALUE
         if live and not use_live:
-            log.warning("live=True requested but %s is not '%s': constructing a PAPER client", LIVE_ENV,
-                        LIVE_ENV_VALUE)
+            raise BrokerError(f"live account requested but {LIVE_ENV} is not '{LIVE_ENV_VALUE}' in the environment; "
+                              "refusing (a paper client is never substituted for a live request)")
         self.is_live = use_live
         self.name = "alpaca-live" if use_live else "alpaca-paper"
         self._sleep = sleep

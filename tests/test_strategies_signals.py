@@ -112,3 +112,37 @@ def test_variants_and_offsets():
     assert v.params["lookback"] == 7 and v.family == "trend_sma"
     g = make_variant("gtaa4", lookback=12, offset=3)
     assert g.signal_offset == 3 and g.universe == ["SPY", "EFA", "IEF", "VNQ"] and g.name == "gtaa4_L12_o3"
+
+
+# ---------------------------------------------------------------- exit-to-cash declaration (R2)
+def test_registry_specs_declare_exit_to_cash_explicitly():
+    from stocktry.strategies.registry import STRATEGIES
+
+    expected = {"spy_buy_hold": False, "sixty_forty": False, "trend_sma10": True, "trend_absmom12": True,
+                "trend_ensemble": True, "gtaa4": True, "gtaa5": True}
+    assert {k: v.allows_exit_to_cash for k, v in STRATEGIES.items()} == expected
+    assert all(isinstance(v.allows_exit_to_cash, bool) for v in STRATEGIES.values())
+    assert {k for k, v in STRATEGIES.items() if v.uses_tbill} == {"trend_absmom12", "trend_ensemble"}
+
+
+def test_runner_reads_the_field_not_the_family_name(caplog):
+    from dataclasses import replace
+
+    from stocktry.execution.strategy_io import declares_exit_to_cash
+    from stocktry.strategies.registry import STRATEGIES
+    from stocktry.strategies.trend import make_trend_sma
+
+    trend = make_trend_sma("SPY", 10)
+    assert declares_exit_to_cash(trend) is True
+    # a trend-family spec that does NOT declare it is not allowed (the old family allow-list is gone)
+    assert declares_exit_to_cash(replace(trend, allows_exit_to_cash=False)) is False
+    assert declares_exit_to_cash(STRATEGIES["sixty_forty"]) is False
+
+    class Legacy:  # a spec object without the field: safe default and a logged warning
+        name, family = "legacy", "trend_sma"
+
+    with caplog.at_level("WARNING"):
+        assert declares_exit_to_cash(Legacy()) is False
+    assert "does not declare allows_exit_to_cash" in caplog.text
+    with pytest.raises(TypeError):
+        declares_exit_to_cash(replace(trend, allows_exit_to_cash="yes"))

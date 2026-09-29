@@ -46,8 +46,11 @@ SCHEMA_VERSION = 1
 
 
 def default_ledger_path(strategy: str) -> Path:
-    """``<repo root>/data/ledger/<strategy>.jsonl`` (data/ is git-ignored)."""
-    return Path(__file__).resolve().parents[3] / "data" / "ledger" / f"{strategy}.jsonl"
+    """``<repo root>/data/ledger/<strategy>.jsonl`` (data/ is git-ignored). Source checkouts only:
+    otherwise pass an explicit ledger path (see ``killswitch.source_checkout_root``)."""
+    from .killswitch import source_checkout_root
+
+    return source_checkout_root() / "data" / "ledger" / f"{strategy}.jsonl"
 
 
 def to_jsonable(obj: Any) -> Any:

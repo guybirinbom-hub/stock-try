@@ -18,7 +18,7 @@ This document is the judgment layer over roughly 90,000 words of verified resear
 
 5. **Scaling is not limited by market capacity** for liquid ETFs (a $100k order in SPY is under 0.001% of daily volume). What changes with scale is the fee drag (falls), taxes on realized gains (rise, and depend on your country), and drawdowns in absolute dollars (rise). No tool can guarantee that scaling preserves profit, because the binding risk is that the edge was never real.
 
-6. **The decision.** This repository builds a zero-token, deterministic foundation: an honest backtester with a strict validation suite, a buy-and-hold index benchmark as the null hypothesis, a small set of published low-turnover candidate strategies evaluated against it with costs, and a paper-trading runner with safety guards. The most likely honest outcome of that pipeline is "buy and hold a low-cost index fund, automate the contributions, and stop there." That is a valid, cheap, evidence-backed result, not a failure.
+6. **The decision, and the result.** This repository builds a zero-token, deterministic foundation: an honest backtester with a strict validation suite, a buy-and-hold index benchmark as the null hypothesis, a small set of published low-turnover candidate strategies evaluated against it with costs, and a paper-trading runner with safety guards. The most likely honest outcome of that pipeline is "buy and hold a low-cost index fund, automate the contributions, and stop there." That is a valid, cheap, evidence-backed result, not a failure. The harness has now been run: every candidate strategy was rejected by the pre-registered gates, and buy-and-hold remains the benchmark nothing here beat (details at the end of section 11).
 
 ---
 
@@ -116,7 +116,7 @@ Prices used (USD per million tokens, input / output, first-party API, verified 2
 
 Verified against Alpaca's fee schedule revised 2026-09-17.
 
-- **Fractional orders**: minimum $1 notional; market, limit, stop and stop-limit; time-in-force DAY only, so no opening or closing auction orders, which means fills will not equal the official close a backtest usually assumes. Not all symbols are fractionable. Fractional sells are long-only.
+- **Fractional orders**: minimum $1 notional on buy orders (sells have no minimum); market, limit, stop and stop-limit; time-in-force DAY only, so no opening or closing auction orders, which means fills will not equal the official close a backtest usually assumes. Not all symbols are fractionable. Fractional sells are long-only.
 - **Fees**: no commission. Pass-through SEC fee ($20.60 per million on sells, from 2026-04-04), FINRA TAF ($0.000195 per share on sells; paused at $0.00 for Oct-Dec 2026, though whether Alpaca passes the pause through is unverified) and CAT ($0.000003 per share on buys and sells). **Each fee type is aggregated per day and rounded up to $0.01.** Consequences:
 
 | Notional | Round-trip fees | All-in as % of position (fees plus a one-tick SPY spread) |
@@ -223,10 +223,55 @@ The owner asked whether to use, modify, or create a tool. Findings:
 2. `stocktry.backtest`: monthly-rebalance engine with next-bar execution; cost model with per-instrument spread, fund expense ratios, and the Alpaca per-day per-fee-type round-up parameterized by starting capital; metrics (CAGR, volatility, Sharpe, Sortino, max drawdown and duration, Calmar, turnover, exposure, hit rate); regime slices.
 3. `stocktry.validation`: walk-forward; parameter-plateau sweep; stationary block bootstrap; trial ledger with deflated Sharpe ratio and probability of backtest overfitting; the one-bar-shift leakage test; a buy-and-hold-equals-benchmark identity test.
 4. `stocktry.strategies`: buy-and-hold (the null); single-asset trend filter (10-month SMA, 12-month absolute momentum, and an ensemble of 6-12 month lookbacks); multi-asset trend allocation with tranched rebalancing. All deterministic, all monthly.
-5. `stocktry.execution`: a broker interface; a local simulated broker for tests; an Alpaca adapter with the safety guards above; a rebalance runner whose default mode is dry-run and which never calls an LLM.
+5. `stocktry.execution`: a broker interface; a local simulated broker for tests; an Alpaca adapter with the safety guards above; a rebalance runner whose default mode is dry-run and which never calls an LLM. Runner rules: a rebalance opens new positions only on the first trading session of the month (a missed first session needs the operator's explicit late-start flag and is refused in CI), later triggers in the first five sessions can only finish legs that already have an order, no order is submitted after an 8-minute run deadline or outside market hours, and any open order not placed by the runner blocks trading.
 6. `stocktry.report`: templated markdown and CSV reports (zero tokens), always labelled hypothetical, always alongside the benchmark and worst drawdown, always stating the trial count.
 7. `scripts/run_backtests.py` produces the results tables committed under `results/`; `scripts/paper_rebalance.py` runs one paper-trading cycle.
 8. Tests with a fake broker: duplicate triggers, simulated 504 on a landed order, crash-and-restart reconciliation, out-of-hours trigger, stale data, bad weights, notional caps, units-vs-notional swap, partial fills, margin-enabled account, kill switches, dry-run default, log scrubbing.
+
+### What the harness found (first full run, 2026-09-29)
+
+All figures below are hypothetical backtests produced by `scripts/run_backtests.py` and reproduced in `results/`. Setup: $10,000 starting capital, fractional shares, signal at the month-end close, fill at the next day's open, half-spread floored at 5 bp per side, the Alpaca fee model with per-day rounding, Alpaca's $1 minimum on buys, dividends reinvested through total-return prices. Taxes, market impact and dividend withholding are not modelled. Cash earns the 3-month T-bill rate.
+
+**Fund-proxy sample, June 1996 to August 2026 (30.2 years):**
+
+| Strategy | CAGR | Volatility | Sharpe | Max drawdown | Switches/yr |
+|---|---|---|---|---|---|
+| SPY buy and hold (the benchmark) | 10.3% | 15.3% | 0.57 | -55.2% | 0 |
+| 60/40 SPY/AGG, annual rebalance | 8.2% | 9.5% | 0.64 | -33.8% | 0 |
+| SPY 10-month SMA filter | 9.1% | 11.0% | 0.64 | -24.4% | 1.4 |
+| SPY 12-month absolute momentum | 10.5% | 11.9% | 0.71 | -33.7% | 0.5 |
+| SPY trend ensemble (6-12 month lookbacks) | 9.6% | 10.5% | 0.71 | -21.2% | 4.4 |
+| GTAA-4 (US, international, Treasuries, REITs) | 6.8% | 7.2% | 0.64 | -17.7% | 5.0 |
+
+**ETF-only sample, March 2006 to August 2026 (20.5 years):**
+
+| Strategy | CAGR | Volatility | Sharpe | Max drawdown |
+|---|---|---|---|---|
+| SPY buy and hold | 11.1% | 15.1% | 0.67 | -55.2% |
+| 60/40 | 8.3% | 9.6% | 0.70 | -33.8% |
+| SPY 10-month SMA | 8.3% | 10.7% | 0.64 | -24.4% |
+| SPY 12-month absolute momentum | 9.3% | 11.9% | 0.67 | -33.7% |
+| SPY trend ensemble | 9.0% | 10.2% | 0.74 | -21.2% |
+| GTAA-4 | 5.6% | 7.3% | 0.56 | -14.2% |
+| GTAA-5 (adds commodities) | 5.5% | 6.6% | 0.58 | -14.5% |
+
+**Before and after publication** (pre-registered split at 2006-01-01, the year Faber's paper appeared; fund-proxy sample): SPY went from 8.3% to 11.2% a year; the 10-month SMA from 10.7% to 8.4%; 12-month momentum from 12.8% to 9.4%; GTAA-4 from 9.6% to 5.6%. Every trend rule beat the index before publication and lagged it afterwards, exactly the decay pattern the literature describes.
+
+**Gate A verdict: every candidate rejected.** The five candidates (three SPY trend filters, GTAA-4, GTAA-5) all failed two gates:
+- A.4, overfitting: the probability of backtest overfitting across the parameter grids was 0.49 to 0.87 against a threshold of 0.20. In every grid the parameter that looked best in-sample did worse than the median out of sample. The deflated Sharpe ratio passed for every candidate, but it also passed for SPY itself (it tests whether the Sharpe is above zero, not whether the rule beats the index), so it rejected nothing; the supplementary information ratio against SPY is negative for every candidate.
+- A.7, recent record: every candidate lost to SPY in each of the last three non-overlapping 5-year windows, and the 10-month SMA also lost more than SPY in 2022 (-20.7% against -18.2%).
+
+What the trend rules did deliver is what section 3 predicted: drawdowns of 21% to 34% against 55% for the index, at a cost of 1 to 3 points a year of return over the last twenty years. That is a risk-preference trade, not an edge.
+
+**Rebalance-day luck.** Running the same GTAA rule with the signal read on each trading day of the month gave a CAGR spread of 173 to 209 bp across days, in line with the 220 bp the literature reports. A rule whose result depends that much on the calendar day is measuring luck as much as skill.
+
+**Scaling.** At $1, SPY buy-and-hold compounds at the same 11.1% as at $100,000 because it trades once; every rule that trades pays the fee floor: the 10-month SMA earned 6.7% at $1 (fees 1.5% of equity a year) against 8.3% at $100 and 8.4% at $10,000; the multi-asset rules cannot invest at all at $1 because each $0.20 sleeve is below the $1 minimum; the fractional-exposure ensemble ratchets into cash at $1 (0.2% a year). With whole shares a $100 account sits mostly in cash. The fee floor stops mattering between $100 and $1,000, as section 6 said.
+
+**Cross-checks and leakage tests.** The engine agrees with the independent `bt` library to within a millionth of a basis point per month on buy-and-hold and the 10-month rule. The buy-and-hold identity test shows zero tracking difference. A strategy given perfect foresight of next month's direction earns nothing through the engine's normal path (alpha t-statistic 0.2) and a huge return only if the engine is forced internally to fill on the signal bar (t-statistic 31), and rewriting every price after a mid-sample date changes no decision made before it. Two pre-registered data cross-checks failed for identified structural reasons and were not loosened (section 14).
+
+**Verification.** The code was adversarially reviewed after it was built, in three rounds: 41 findings in all, of which 10 were rated medium and none higher, every one resolved and independently re-verified, with over a hundred adversarial tests left in the suite. Notable catches: a series that stopped early was silently forward-filled to the end of a backtest; a corrupted adjusted price with a clean raw price passed every quality gate; the broker SDK's automatic retry could duplicate an order after a timeout; an order in the broker's "stopped" state was treated as final and re-sent; the string `"false"` in a targets file switched a safety declaration on; and a `.gitignore` pattern had excluded the entire data package from git. The full suite is 402 tests and runs offline in about 20 seconds.
+
+**What this means for the owner.** History, tested as honestly as this harness can manage, does not show a published low-turnover rule beating the index after costs over the last twenty to thirty years. The system is ready to paper-trade any of these rules for operational reasons, but the evidence says the rule to paper-trade first is buy-and-hold with contributions, and that a trend overlay is worth running only if smaller drawdowns matter more than return.
 
 **Not built, on purpose:** any LLM call at runtime; day-trading or intraday logic; single-stock selection; crypto; a ten-country broker matrix (one adapter plus a simulator until the owner's country is known); a GitHub-Actions-cron-only live trader.
 
@@ -298,6 +343,8 @@ Rulings on the fact-checker's judgment points, after the first harness run:
 - Live broker keys are never stored on GitHub; the repository holds paper keys at most.
 - The custom backtest engine stays the primary engine, against the tooling verifier's preference for `bt`, because it models per-day fee rounding that `bt` cannot; the risk the verifier raised is met by the `bt` cross-check (agreement to a millionth of a basis point on buy-and-hold and the 10-month rule), the identity test and the perfect-foresight tests.
 - Gate D is now stated to be close to unreachable by design.
+- Gate A.8 was strengthened post hoc after the adversarial code review showed the one-day-delay test has little power against a small leak: every candidate is now also re-run with all prices after a mid-sample date rewritten, and every decision before that date must be unchanged. All candidates pass; no verdict changed.
+- Alpaca's $1 minimum applies to buy orders only; the engine and runner were changed to match, and the $1-scale rows in `results/scaling.md` reflect that.
 - Two pre-registered cross-check thresholds failed for identified structural reasons and were not loosened: the S&P 500's correlation with the Ken French total-market series is 0.988 by construction (total-market funds pass at 0.999), and the daily-accrual 3-month T-bill series differs from French's locked 1-month bill by more than 10 bp in 2 of 440 months, both in 2001 when the Fed cut rates mid-month.
 - A final fact-check pass corrected the verdict tally (161 claims: 85 confirmed, 69 needs qualification, 7 refuted) and the research volume (about 90,000 words), and noted that the fee table's percentages include a one-tick spread.
 - Composer is the only no-code trend tool found, not proven the only one; GitHub cron delays were reported up to 14 hours, not 9; Yahoo's terms forbid, not merely restrict, automated collection.

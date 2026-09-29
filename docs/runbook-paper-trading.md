@@ -41,8 +41,33 @@ Facts about paper-only accounts that matter here:
 |---|---|
 | The default paper balance is $100,000. | Create a new paper account at the size you actually intend to trade (step 2), otherwise every percentage looks the same but order sizes and fee effects do not. |
 | A paper account's balance cannot be edited later. | To change the amount you create another paper account (or reset), which starts empty. |
-| Paper-only accounts receive **IEX** market data only (one exchange, not the consolidated feed). | The runner asks Alpaca for the IEX latest trade (`APCA_DATA_FEED=iex` is the default). Prices can differ from the consolidated tape by a few cents. |
+| Paper-only accounts receive **IEX** market data only (one exchange, not the consolidated feed). | The runner takes its daily bars and its latest trade prices from Alpaca's IEX feed (`APCA_DATA_FEED=iex` is the default; see "Where prices come from" below). Prices can differ from the consolidated tape by a few cents. |
 | Paper does **not** simulate regulatory fees, dividends, slippage or market impact. | The runner's shadow ledger adds *modelled* Alpaca fees and dividends. For paper trading, the ledger's modelled numbers are the profit-and-loss of record, not the paper account's equity. |
+
+### Where prices come from
+
+There are two price sources, and they are not interchangeable:
+
+* **The research cache** (`data/cache/`, filled by `scripts/fetch_data.py`) is **personal-use research data
+  downloaded from Yahoo**. Yahoo's terms forbid automated collection, so it is used only for the one-off research
+  backtests and is never committed. When Alpaca's data cannot be read, a cache that **already exists on this
+  machine** is read as it is, with a loud warning: the fallback never refreshes it and never downloads anything, so
+  an unattended run never collects data from Yahoo. On a GitHub runner there is no cache, so an Alpaca data failure
+  stops the run with a data error (exit 4, no orders) and the dead-man check reports the missed day. A stale cache
+  is refused by the price freshness guard (`price_stale`).
+* **Alpaca Market Data** is what the **unattended runner** uses (`--price-source alpaca`, the default whenever
+  `APCA_API_KEY_ID` and `APCA_API_SECRET_KEY` are set): daily bars adjusted for splits and dividends
+  (`adjustment=all`, at least 18 months of history) from the broker's own data API, which your account is licensed to
+  use. The feed is `iex` by default, because a paper-only account is entitled to IEX only; set `APCA_DATA_FEED=sip`
+  (or `--data-feed sip`) only on a funded account that has the consolidated feed. Cash dividends for the modelled
+  ledger come from Alpaca's corporate-actions endpoint (best effort; 0 with a warning if unavailable).
+* The T-bill yield used by the absolute-momentum rules is FRED's public DTB3 series, fetched with `--refresh-data`
+  (the default for `--broker alpaca`) and refused if its last observation is more than 10 days old.
+
+Every run records in the ledger which source and feed it used (`price_source`, `data_feed` on the `run_start` record,
+and on the `hold` record of a month a strategy does not rebalance); a fallback to the cache is recorded as
+`cache (fallback: alpaca ...; local, not refreshed)`. `--price-source cache` (with `--refresh-data`) is the only path
+that downloads from Yahoo; use it by hand for research, never in a scheduler.
 
 ## 2. Create a paper account at your intended capital
 
@@ -75,7 +100,12 @@ export APCA_API_SECRET_KEY='...'        # paper secret
 # optional, see section 9:
 export NTFY_TOPIC='a-long-random-topic-name'
 export HEALTHCHECK_URL='https://hc-ping.com/<your-uuid>'
+export APCA_DATA_FEED=iex               # optional; iex is the default (paper-only accounts get IEX only)
 ```
+
+Install with `pip install -e .` (editable), as above: the kill-switch file and the default ledger live at the
+repository root, and the runner refuses to guess them after a non-editable `pip install .` (set `KILL_SWITCH_FILE`
+and pass `--ledger` if you ever install it that way).
 
 On Windows PowerShell use `$env:APCA_API_KEY_ID = 'PK...'`.
 
@@ -89,7 +119,8 @@ python scripts/paper_rebalance.py --broker sim \
 You should see a plan like this (the fixture's prices are made up):
 
 ```
-strategy=sample_three_asset broker=sim dry_run=True rebalance_id=sample_three_asset-2026-10-01 ...
+simulated clock: 2026-10-01 11:00 New York time
+strategy=sample_three_asset broker=sim dry_run=True rebalance_id=sample_three_asset-2026-10-01 ... price_source=file
 symbol  side      notional         est_qty  client_order_id
 SPY     sell         $6.00        0.010504  sample_three_asset-2026-10-01-SPY-sell-a1
 GLD     buy          $4.93        0.020311  sample_three_asset-2026-10-01-GLD-buy-a1
@@ -113,11 +144,18 @@ python scripts/paper_rebalance.py --broker sim --targets-json tests/fixtures/sam
 python scripts/paper_rebalance.py --broker sim --targets-json tests/fixtures/sample_targets_initial.json --capital 100 --no-dry-run --initial-deployment
 ```
 
-A registry strategy on the simulator uses real daily data from the data layer:
+A registry strategy on the simulator uses real daily data from the data layer (the research cache when no Alpaca
+keys are set):
 
 ```bash
 python scripts/paper_rebalance.py --broker sim --strategy spy_buy_hold --capital 1000 --dry-run
 ```
+
+The simulator prints its simulated clock. It opens a month's rebalance only on the month's first session (see
+section 8, "Later triggers in the same month"), so on other days the plan is printed with its legs skipped
+(`first_session_passed`) or marked `market gate would skip: execution_window_closed`; add
+`--rebalance-date 2026-10-01` to simulate a rebalance day. A targets file with prices simulates the session after
+its prices and warns when that is more than five days before today.
 
 ## 6. Harden the paper account (once)
 
@@ -144,24 +182,38 @@ python scripts/paper_rebalance.py --broker alpaca --strategy spy_buy_hold
 1. checks the kill switches;
 2. reads Alpaca's clock and calendar, refuses a stale clock, and works out the
    **due rebalance**: the first trading day of the current month. Missed months
-   are never replayed; only the latest due rebalance is traded;
+   are never replayed; only the latest due rebalance is traded. Its legs are
+   **opened only on that first trading day**; the next four sessions (the
+   **execution window**, the first five sessions of the month) only finish legs
+   that already have an order. Later in the month a run does nothing (a
+   heartbeat) and the month waits for the next rebalance, so a signal decided
+   weeks earlier is never traded late;
 3. checks the account (margin 1, no shorting, options 0, not blocked, not
    suspended, empty crypto withdrawal whitelist where that endpoint still exists);
-4. evaluates the strategy on the close of the trading day *before* the
-   rebalance date (the backtest's decide-at-close, trade-next-day rule), and
-   sizes orders with the latest prices;
-5. prints the plan and every guard result.
+4. refuses to trade while any open order at the broker was not placed by this
+   rebalance (for example one you placed by hand in the dashboard);
+5. evaluates the strategy on the close of the trading day *before* the
+   rebalance date (the backtest's decide-at-close, trade-next-day rule), on
+   Alpaca's daily bars, and sizes orders with the latest prices;
+6. prints the plan and every guard result.
 
 Orders are only ever sent between **30 minutes after the open and 30 minutes
 before the close** (10:00-15:30 New York time; 10:00-12:30 on early-close days).
 A dry run outside those hours still prints the plan, marked
 `market gate would skip`. A real run outside those hours does nothing and
-exits 0. Market orders are never queued for the next open.
+exits 0. The window is re-checked with a fresh broker clock immediately before
+**every** order, so waiting on slow fills can never push an order past
+close-30min, and a run stops sending orders 8 minutes after it started; the
+remaining legs are reported (exit 1, alert `submissions_stopped`) and left for
+the next trigger. Market orders are never queued for the next open.
 
-Exit codes: `0` fine (including "nothing to do" and "market closed"), `1`
-rebalance incomplete (a partial fill that could not be finished; an alert was
-sent), `2` blocked by a guard, `3` kill switch or live not authorized, `4`
-configuration, credential or data error, `5` unexpected error during a run
+Exit codes: `0` fine (including "nothing to do", "market closed", "not a
+rebalance month" and "execution window closed"), `1` rebalance incomplete (a
+partial fill that could not be finished, or the market window or run deadline
+reached mid-run; an alert was sent), `2` blocked by a guard, `3` kill switch or
+live not authorized (including `--live` without `LIVE_TRADING=yes-live`), `4`
+configuration, credential or data error (a missing or malformed targets file, a
+non-finite `--capital`, a bad symbol), `5` unexpected error during a run
 (already alerted and written to the ledger).
 
 ## 8. Paper for real
@@ -201,24 +253,72 @@ strategy that has moved to cash re-enters through the same flag, so a
 re-entry month needs you to confirm it; the alert tells you when.
 
 At very small sizes some strategies cannot be built at all: Alpaca's minimum
-order is $1, so a five-ETF strategy at 20% each needs at least $1 per sleeve
-(a little over $5 in total, plus a fee buffer). Below that the runner refuses
-the **whole** rebalance rather than trade a distorted half-portfolio: use a
-single-ETF strategy (`spy_buy_hold`) or more capital. Changes smaller than $1
-on an existing position are left as drift, so below a few hundred dollars a
-multi-ETF portfolio will wander noticeably from its targets between months.
+is $1 for **buy** orders, so a five-ETF strategy at 20% each needs at least $1
+per sleeve (a little over $5 in total, plus a fee buffer). Below that the runner
+refuses the **whole** rebalance rather than trade a distorted half-portfolio:
+use a single-ETF strategy (`spy_buy_hold`) or more capital. Sells have no
+minimum: an over-weight position is trimmed by any amount of at least one cent,
+and a full exit sells the exact quantity held, however small. Top-up buys
+smaller than $1 are left as drift, so below a few hundred dollars a multi-ETF
+portfolio holds some cash and wanders from its targets between months, and
+trimming costs a few cents of fees a month (the backtest's `scaling.md` shows
+the effect).
 
 A strategy that moves most of the portfolio to cash (a trend filter going
-"out") is only allowed if the strategy declares it. The registry's trend and
-GTAA strategies are declared; the buy-and-hold and 60/40 benchmarks are not,
-so a bug that tells them to sell everything is refused.
+"out") is only allowed if the strategy declares it (`allows_exit_to_cash` on
+the strategy's specification; in a targets file, a JSON `true`, never the
+string `"true"`). The registry's trend and GTAA strategies are declared; the
+buy-and-hold and 60/40 benchmarks are not, so a bug that tells them to sell
+everything is refused. For a declared strategy, full-exit sells and buys of its
+cash ETF are exempt from the size caps (they reduce risk); the cash ETF must be
+a T-bill fund (BIL, SHV, SGOV, TBIL or BILS), so no other symbol can be bought
+uncapped under that label.
 
 ### Partial fills
 
 If an order fills only partly, the runner computes what is still missing from
 fresh prices and sends **one** more order with a new id (`...-a2`). If that
 also fails to fill, it stops, alerts, and leaves the residual until next month.
-It never sends a third attempt for the same rebalance.
+It never sends a third attempt for the same rebalance. An order Alpaca reports
+as `stopped` (a trade is guaranteed but has not happened yet) or `suspended` is
+treated as still open: the runner waits and never sends a second attempt while
+it is outstanding.
+
+### Later triggers in the same month
+
+New legs of a rebalance (attempt `-a1`) are opened **only on its scheduled
+session**, the first trading day of the month, just as the backtest trades
+only at that month's first open. A later trigger the same day can finish it
+(for example after a crash between the sells and the buys). From the second
+session on, a trigger only finishes legs that already have an order (waits, or
+one `-a2` residual); it never opens a new leg because prices drifted, **even if
+the first session placed no order at all** (everything was within $1 of
+target, status `nothing_to_do`). This rule uses only the broker's calendar and
+its order list, so it holds on a GitHub runner that starts with an empty ledger
+every time. Where the ledger is kept (a local machine), a run recorded as
+`completed`, `already_done` or `nothing_to_do` also closes new legs for the rest
+of that day. If a run could not finish the buys on the first day, the rest of
+the month is held in cash with an alert, and the next rebalance restores the
+targets. A later session with no order prints the plan with its legs skipped
+(`first_session_passed`), exits 0 and pings the dead-man check.
+
+**If the first session was missed** (the scheduler or GitHub was down, the data
+source failed, or a guard blocked the run and you fixed the cause), nothing
+trades automatically that month. After checking the ledger or the log that no
+run evaluated that day, you can start the rebalance by hand on a later session
+of the execution window (sessions 2 to 5):
+
+```bash
+python scripts/paper_rebalance.py --broker alpaca --strategy spy_buy_hold --no-dry-run --late-start
+```
+
+`--late-start` opens legs only while no order of the rebalance exists at the
+broker and the local ledger shows no evaluated run for it; it is recorded in
+the ledger (`late_start`), refused when `CI` or `GITHUB_ACTIONS` is `true`, and
+must never be put in a scheduler (it would bring back mid-month trading on
+drifted prices). A re-entry blocked on the first day by the size limits (section
+8) is confirmed the same way: `--initial-deployment` plus `--late-start` if it
+is no longer the first session.
 
 ## 9. Read the ledger
 
@@ -265,9 +365,13 @@ expiry date.
 **When to fire.** Weekdays at **15:35 UTC and again at 18:05 UTC**. Both
 times fall inside the safe window in summer and winter time (the window is
 14:00-19:30 UTC in summer, 15:00-20:30 UTC in winter). Firing every weekday is
-fine: the runner works out itself whether a rebalance is due, a second trigger
-finds the orders already placed and does nothing, and a daily run doubles as a
-heartbeat.
+fine: the runner works out itself whether a rebalance is due (legs are opened
+only on the first session of a month), a second trigger finds the orders
+already placed and only finishes legs that are already started, and every
+other run is a heartbeat that does nothing but ping the dead-man check. Both
+daily triggers matter on the first session of a month: if neither runs, that
+month is not traded unless you start it by hand with `--late-start`
+(section 8).
 
 ```bash
 # the same call by hand (useful to test the PAT):
@@ -282,17 +386,32 @@ curl -X POST -H "Accept: application/vnd.github+json" -H "Authorization: Bearer 
   `APCA_PAPER_API_KEY_ID`, `APCA_PAPER_API_SECRET_KEY`, optional `NTFY_TOPIC`,
   `HEALTHCHECK_URL`. Paper keys only.
 * *Variables*: `PAPER_STRATEGY` (e.g. `spy_buy_hold`), `KILL_SWITCH` = `off`.
+* Optional *variable* `APCA_DATA_FEED` (default `iex`). The workflow passes
+  `--price-source alpaca`: prices come from Alpaca, never from Yahoo.
 * The workflow runs `--dry-run`. To submit paper orders, edit the one command
   in the workflow from `--dry-run` to `--no-dry-run` and push.
+* Dependencies are installed only from the hash-locked `requirements.lock`
+  (every package, transitive ones included); the job fails rather than install
+  anything unpinned next to the paper keys.
+* The job timeout is 20 minutes; the runner itself stops sending orders after
+  8 minutes and cancels what is still open, so GitHub never kills it between a
+  submit and its cancel.
 * Each run uploads the ledger as a private artifact kept for 90 days.
 
 **A local machine** works too: `cron` (Linux/macOS) or Task Scheduler
 (Windows) running the same command, if the machine is reliably on.
 
-**Dead-man alert.** Create a free check at <https://healthchecks.io> with a
-period of 1 day and a grace time of about 1 day, and put its ping URL in
-`HEALTHCHECK_URL`. The runner pings only after a successful run, so if the
-scheduler, GitHub, or the runner silently stops, healthchecks.io e-mails you.
+**Dead-man alert.** Create a free check at <https://healthchecks.io> using a
+**cron schedule**, not a simple period: schedule `35 15 * * 1-5`, time zone
+UTC, grace time 4 hours. Put its ping URL in `HEALTHCHECK_URL`. (A 1-day period
+would report "down" every weekend, because nothing runs on Saturday and Sunday,
+and false alarms teach you to ignore the real one.) The runner pings after
+every run that ends without error at a valid time: a completed or unchanged
+rebalance, a month the strategy does not rebalance, a day outside the
+execution window, and a weekday market holiday. It does **not** ping when it
+ran on a trading day outside the market-hours window, so a scheduler set to the
+wrong time trips the alert. If the scheduler, GitHub, or the runner silently
+stops, healthchecks.io e-mails you.
 
 ## 11. Alerts
 
@@ -334,7 +453,11 @@ cannot find it, **regenerate the API keys** on the API Keys page (the old key
 stops working immediately) and cancel any open orders from the Orders page.
 
 **3. Mode.** Dry run is the default; live needs `LIVE_TRADING=yes-live`,
-`--live` and `--i-understand-live` together.
+`--live` and `--i-understand-live` together. `--live` without
+`LIVE_TRADING=yes-live` is refused outright (exit 3), including for
+`--harden-account` and `--engage-kill-switch`: it never falls back to the paper
+account, so an admin action can never silently act on the wrong one. Admin
+actions print which account (`alpaca-paper` or `alpaca-live`) they act on.
 
 ## 13. Gates before anything real
 
@@ -406,6 +529,13 @@ effectively unrecoverable; paper trading covers the same plumbing for free.
 | `units_mismatch`, `qty_on_notional_leg` | The order about to be sent does not match the plan's dollars | A code bug: do not override; report it |
 | `rebalance_id_not_due` | Someone asked for an old (or future) rebalance | Nothing: only the latest due rebalance is ever traded |
 | `position_outside_universe`, `foreign_orders` | The account holds or traded symbols this strategy does not own | Use a dedicated account per strategy |
+| `foreign_open_orders` | An open order at the broker was not placed by this rebalance (e.g. a manual dashboard order) | Cancel it or wait for it to finish, then rerun; use a dedicated account |
+| `cash_symbol_not_cash_like` | A strategy names something other than a T-bill ETF (BIL, SHV, SGOV, TBIL, BILS) as its cash | Fix the strategy or targets file |
+| `kill_switch_path_unknown` | Not a source checkout, so the repository-root `KILL_SWITCH` file cannot be located | Install with `pip install -e .`, or set `KILL_SWITCH_FILE` |
+| `submissions_stopped` (alert, exit 1) | The market window closed or the 8-minute run deadline passed while the run was waiting on fills | Nothing to undo: no order was sent late. The next trigger (same day) finishes the started legs |
+| `execution_window_closed` (skip, exit 0) | The month's rebalance is past its first five sessions | Nothing: the next month's rebalance restores the targets |
+| `first_session_passed` (skip, exit 0) | A session after the month's first: new legs are not opened on drifted prices | Nothing, normally. If the first session was missed, see section 8, `--late-start` |
+| `rebalance_already_evaluated`, `rebalance_already_executed` (skipped legs) | A run already evaluated or started this rebalance; drift is not traded until next month | Nothing |
 
 ## 18. Alpaca behaviours that are ambiguous, and how the code handles them
 
@@ -419,8 +549,16 @@ effectively unrecoverable; paper trading covers the same plumbing for free.
   runner uses only market DAY orders for notional legs.
 * **Full exits.** A notional sell of the whole position is rejected if the price
   ticks down before the fill and otherwise leaves dust. Full exits (target 0)
-  therefore sell the exact held quantity (`qty`, up to 9 decimals); every other
-  leg is dollars-only. Positions worth under $1 are left as dust.
+  therefore sell the exact held quantity (`qty`, up to 9 decimals), of any size;
+  every other leg is dollars-only.
+* **Minimum order size.** Alpaca documents "a minimum 1 USD notional amount for
+  Buy entry orders". The runner, the simulator and the backtest therefore apply
+  the $1 minimum to buys only and send notional sells down to one cent. If
+  Alpaca ever rejects a sub-$1 notional sell, the leg fails with an alert and the
+  runner does not retry it in that run.
+* **`stopped` orders.** Alpaca uses `stopped` for an order whose trade is
+  guaranteed but has not yet happened. The runner treats it as open (never as
+  final), so it never sends a residual order next to it.
 * **`done_for_day` / partial fills.** For DAY orders the unfilled remainder
   never fills, so the runner treats `done_for_day` as final and re-sizes the
   residual once (`-a2`).

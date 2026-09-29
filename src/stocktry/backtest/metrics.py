@@ -211,14 +211,41 @@ def count_switches(rebalances: pd.DataFrame, tol: float = 1e-9) -> int:
     return n
 
 
+class LeakyResultError(ValueError):
+    """A same-bar-fill (look-ahead) result reached a reporting function."""
+
+
+def refuse_leaky(result: Any) -> None:
+    """Raise if ``result`` came from a same-bar-fill run (leakage tests only; never reportable)."""
+    if getattr(result, "leaky", False):
+        raise LeakyResultError(
+            f"{getattr(result, 'strategy', '?')}: refusing a leaky (same-bar-fill) result; such runs exist only "
+            "inside stocktry.validation.leakage and are never summarized, ledgered or reported")
+
+
+def turnover_excluding_initial(rebalances: pd.DataFrame) -> float:
+    """Sum of per-rebalance turnover, excluding the initial purchase.
+
+    The initial purchase is the first rebalance that placed any order (a rule that
+    starts in cash buys later than the first rebalance row).
+    """
+    if rebalances is None or len(rebalances) == 0:
+        return 0.0
+    traded = rebalances.index[rebalances["n_orders"].to_numpy() > 0]
+    if len(traded) == 0:
+        return 0.0
+    return float(rebalances["turnover"].drop(index=traded[0]).sum())
+
+
 def summarize(result: Any, bench: pd.Series | None = None) -> dict[str, Any]:
-    """Headline metrics for a :class:`~stocktry.backtest.engine.BacktestResult`."""
+    """Headline metrics for a :class:`~stocktry.backtest.engine.BacktestResult` (refuses leaky results)."""
+    refuse_leaky(result)
     r = result.monthly_returns
     rf = result.rf_monthly
     years = len(r) / PERIODS_PER_YEAR
     mdd_daily = max_drawdown(result.equity)
     reb = result.rebalances
-    turnover = float(reb["turnover"].iloc[1:].sum()) if len(reb) > 1 else 0.0
+    turnover = turnover_excluding_initial(reb)
     out: dict[str, Any] = {
         "strategy": result.strategy,
         "first_month": str(r.index[0].to_period("M")) if len(r) else None,

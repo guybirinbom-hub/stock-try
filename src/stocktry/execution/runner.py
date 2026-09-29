@@ -13,17 +13,36 @@ operations for one run:
    broker-side ``suspend_trade`` off, empty crypto whitelist).
 4. Market-hours gate: only between open+30 min and close-30 min of a session.
    Otherwise a non-dry run exits 0 with a log line and no action (orders are
-   never queued for the next open).
-5. Read existing orders for this rebalance (by client_order_id prefix): legs
+   never queued for the next open). Execution-window gate: a rebalance is only
+   traded within its first ``EXECUTION_WINDOW_SESSIONS`` sessions; later in the
+   month the run is a heartbeat and does nothing.
+5. Refuse to trade while any open order at the broker is not this
+   rebalance's own (a manual dashboard order would land on top of the plan).
+   Read existing orders for this rebalance (by client_order_id prefix): legs
    already filled are done, open orders are waited on, partially filled legs
    may get one more attempt (``a2``), nothing is ever resubmitted under an id
-   that exists at the broker.
+   that exists at the broker. New legs (attempt ``a1``) may only be opened on
+   the rebalance's scheduled session (session 1 of its execution window), and
+   not after a run recorded it as evaluated (``run_end`` completed,
+   already_done or nothing_to_do in the local ledger, when there is one). The
+   rule for later sessions depends only on the broker calendar and the broker's
+   order list, not on the ledger (which an ephemeral CI runner does not keep):
+   on sessions 2..N a trigger only finishes legs that already have an order
+   (waits, or one ``a2`` residual) and never starts new trades on drifted
+   prices, even when the first session placed no order at all. The one
+   exception is ``RunConfig.late_start``, an operator's explicit confirmation
+   (``--late-start``) that no run evaluated the scheduled session; it opens
+   legs on a later session of the window only while no order of the rebalance
+   exists at the broker and the ledger shows no evaluated run.
 6. Validate inputs (weights, whitelist, dated fresh prices, live prices,
    equity), plan, and apply plan-level hard guards. Log the full plan.
 7. Dry run: stop here. Otherwise sells first; wait for terminal states (cancel
    after the poll timeout); then size buys from min(cash,
    non_marginable_buying_power) and submit. Before every order: kill-switch
-   re-check, units cross-check, lookup by client_order_id and by listing.
+   re-check, units cross-check, lookup by client_order_id and by listing, and
+   (immediately before sending) a fresh broker clock: nothing is sent after
+   close-30min or after the run's own deadline (``deadline_s``), however long
+   waiting on fills took.
 8. Reconcile against broker activities, write the ledger, alert or ping.
 
 Every hard block raises ``GuardViolation`` after alerting and writing a ledger
@@ -48,6 +67,7 @@ from .alerts import Alerter
 from .broker import Broker, CalendarDay, Clock, DuplicateClientOrderId, LatestPrice, Order
 from .fees import FeeFill
 from .guards import (
+    CASH_LIKE_SYMBOLS,
     MIN_ORDER_NOTIONAL,
     GuardViolation,
     Limits,
@@ -70,6 +90,7 @@ from .planning import OrderRequest, PlannedOrder, PriceQuote, SkippedLeg, coerce
 from .preflight import run_preflight
 from .sessions import (
     ET,
+    EXECUTION_WINDOW_SESSIONS,
     due_rebalance_date,
     first_session_of_month,
     last_completed_session,
@@ -77,6 +98,7 @@ from .sessions import (
     make_rebalance_id,
     previous_session,
     rebalance_prefix,
+    session_number,
     session_on,
     validate_strategy_name,
     validate_symbol,
@@ -103,6 +125,10 @@ class RunConfig:
     that a large drop in risky exposure (e.g. a trend filter moving to cash) is
     intended. ``initial_deployment``: operator carve-out that lifts the daily
     notional and turnover caps for one run from an all-cash account.
+    ``late_start``: operator confirmation that the rebalance was not evaluated
+    on its scheduled session (scheduler outage, a guard block fixed since);
+    lets a later session of the execution window open its legs while no order
+    of the rebalance exists yet. Never set it in an unattended scheduler.
     ``poll_interval_s`` seconds between order-status polls, ``poll_max`` polls
     per wait before cancelling. ``cash_buffer_*``: dollars kept back for fees.
     """
@@ -115,6 +141,7 @@ class RunConfig:
     i_understand_live: bool = False
     allow_exit_to_cash: bool = False
     initial_deployment: bool = False
+    late_start: bool = False
     corporate_action_symbols: frozenset[str] = frozenset()
     limits: Limits = field(default_factory=Limits)
     limits_ack: str = ""
@@ -129,6 +156,12 @@ class RunConfig:
     sleep: Callable[[float], None] = time.sleep
     env: Mapping[str, str] | None = None
     alerter: Alerter | None = None
+    #: No order is sent later than this many seconds after the run started (keep it well below the
+    #: scheduler's job timeout, so a run is never killed between a submit and its cancel).
+    deadline_s: float = 480.0
+    #: Where the prices came from ("alpaca", "cache", "file", ...) and the Alpaca feed; recorded in the ledger.
+    price_source: str = ""
+    data_feed: str | None = None
 
 
 @dataclass
@@ -212,6 +245,30 @@ class _Run:
         self.rebalance_start: datetime | None = None
         self.today_start: datetime | None = None
         self.symbols_all = tuple(cfg.universe) + ((cfg.cash_symbol,) if cfg.cash_symbol else ())
+        self.started = cfg.local_now()
+        self.new_legs_allowed = True
+        self.new_legs_block = ""  # skip reason for legs without an order when new legs are not allowed
+        self.calendar: Sequence[CalendarDay] = ()
+        self.halted: str | None = None  # why submissions stopped mid-run (market window / deadline)
+
+    # ------------------------------------------------------------- submission gate
+    def past_deadline(self, grace_s: float = 0.0) -> bool:
+        return (self.cfg.local_now() - self.started).total_seconds() > self.cfg.deadline_s + grace_s
+
+    def submission_block(self) -> str | None:
+        """Reason no order may be sent *now* (fresh broker clock), else None."""
+        if self.past_deadline():
+            return f"run deadline of {self.cfg.deadline_s:.0f}s reached"
+        clock = self.broker.get_clock()
+        session = session_on(self.calendar, clock.now.astimezone(ET).date())
+        window = check_market_window(clock, session, self.cfg.local_now())
+        return f"market window closed ({window})" if window else None
+
+    def halt(self, reason: str) -> None:
+        if self.halted is None:
+            self.halted = reason
+            self.note_incomplete(f"submissions stopped: {reason}")
+            self.alert("submissions_stopped", f"{reason}; remaining legs not sent (never queued for the next open)")
 
     # ------------------------------------------------------------- helpers
     def alert(self, code: str, detail: str) -> None:
@@ -281,6 +338,9 @@ class _Run:
                 skipped.append(SkippedLeg(leg.symbol, leg.side, leg.est_notional, "submit_failed_this_run"))
                 continue
             if st is None:
+                if not self.new_legs_allowed:
+                    skipped.append(SkippedLeg(leg.symbol, leg.side, leg.est_notional, self.new_legs_block))
+                    continue
                 out.append((leg, 1))
                 continue
             if st.filled:
@@ -337,6 +397,15 @@ class _Run:
             self.alert("order_already_exists", f"{cid} already at broker (status {prior.status}); not resubmitted")
             self.result.existing.append(prior)
             return prior
+        try:
+            block = self.submission_block()  # a fresh clock right before sending (lookups can be slow)
+        except GuardViolation:
+            raise
+        except Exception as exc:  # noqa: BLE001 - cannot verify the window -> do not send
+            block = f"broker clock unavailable ({type(exc).__name__})"
+        if block:
+            self.halt(block)
+            return None
         self.ledger.append({"event": "submit_intent", "rebalance_id": self.rebalance_id, "request": req})
         try:
             order = self.broker.submit_order(
@@ -382,6 +451,8 @@ class _Run:
             poll_round()
             if not pending:
                 return final
+            if self.past_deadline():
+                break  # cancel now rather than let a job timeout kill the run with orders open
             self.cfg.sleep(self.cfg.poll_interval_s)
         for cid in list(pending):
             o = self.lookup(cid)
@@ -392,7 +463,7 @@ class _Run:
                     log.warning("cancel of %s failed: %s", cid, type(exc).__name__)
         for _ in range(self.cfg.poll_max):
             poll_round()
-            if not pending:
+            if not pending or self.past_deadline(grace_s=120.0):
                 break
             self.cfg.sleep(self.cfg.poll_interval_s)
         for cid in pending:
@@ -463,6 +534,9 @@ def _rebalance(
     # 1. configuration and mode ------------------------------------------------
     for s in run.symbols_all:
         validate_symbol(s)
+    if cfg.cash_symbol and cfg.cash_symbol not in CASH_LIKE_SYMBOLS:
+        raise GuardViolation("cash_symbol_not_cash_like",
+                             f"cash_symbol {cfg.cash_symbol} is not one of {sorted(CASH_LIKE_SYMBOLS)}")
     if not 1 <= cfg.max_attempts <= MAX_ATTEMPTS_HARD:
         raise GuardViolation("max_attempts_invalid", "max_attempts must be 1 or 2")
     validate_limits(cfg.limits, cfg.limits_ack)
@@ -470,15 +544,21 @@ def _rebalance(
                           i_understand_live=cfg.i_understand_live, env=run.env)
     check_kill_switches(run.env, run.kill_path)
     run.ledger.append({"event": "run_start", "rebalance_id": run.rebalance_id, "strategy": cfg.strategy,
-                       "broker": broker.name, "dry_run": cfg.dry_run, "live": broker.is_live})
+                       "broker": broker.name, "dry_run": cfg.dry_run, "live": broker.is_live,
+                       "price_source": cfg.price_source or "caller", "data_feed": cfg.data_feed})
 
     # 2. clock, calendar, due rebalance ----------------------------------------
     clock = broker.get_clock()
     cal = _calendar_window(broker, clock.now)
+    run.calendar = cal
     today = clock.now.astimezone(ET).date()
     session = session_on(cal, today)
     window = check_market_window(clock, session, cfg.local_now())
     due = due_rebalance_date(cal, clock.now)
+    n_session = session_number(cal, due, today)
+    exec_window = (None if n_session <= EXECUTION_WINDOW_SESSIONS else
+                   f"execution_window_closed (the {due.isoformat()} rebalance may only be traded in its first "
+                   f"{EXECUTION_WINDOW_SESSIONS} sessions; today is session {n_session}; waiting for next month)")
     expected = make_rebalance_id(cfg.strategy, due)
     if run.rebalance_id != expected:
         raise GuardViolation("rebalance_id_not_due",
@@ -490,19 +570,37 @@ def _rebalance(
     # 3. account preflight -------------------------------------------------------
     pre = run_preflight(broker)
 
-    # 4. market-hours gate ---------------------------------------------------------
+    # 4. market-hours gate, then the execution window ------------------------------------
     if window is not None and not cfg.dry_run:
         log.info("no action: %s (orders are never queued for the next open)", window)
         res.status, res.reason = "skipped", window
         run.ledger.append({"event": "skipped", "rebalance_id": run.rebalance_id, "reason": window})
+        if session is None:
+            # weekend/holiday: the scheduler fired at a valid time on a closed day; the run is alive. A run on a
+            # session day but outside the window pings nothing, so a mistimed scheduler trips the dead-man check.
+            run.alerter.ping_success()
+        return res
+    if exec_window is not None and not cfg.dry_run:
+        log.info("no action: %s", exec_window)
+        res.status, res.reason = "skipped", exec_window
+        run.ledger.append({"event": "skipped", "rebalance_id": run.rebalance_id, "reason": exec_window})
+        run.alerter.ping_success()  # a normal mid-month heartbeat run
         return res
 
     last_session = last_completed_session(cal, clock.now)
 
-    # 5. existing orders for this rebalance -------------------------------------------
+    # 5. foreign open orders, then existing orders for this rebalance -------------------
+    foreign_open = [o for o in broker.list_orders("open") if not o.client_order_id.startswith(run.prefix)
+                    and not o.is_terminal]
+    if foreign_open:
+        raise GuardViolation(
+            "foreign_open_orders",
+            f"{len(foreign_open)} open order(s) at the broker were not placed by this rebalance "
+            f"({', '.join(sorted({o.symbol for o in foreign_open}))}); cancel them or use a dedicated account")
     orders_since = broker.list_orders("all", after=run.rebalance_start)
     ours_start = run.ours(orders_since)
     res.existing.extend(ours_start)
+    _new_leg_gate(run, ours_start, n_session, today, due)
     open_ours = [o.client_order_id for o in ours_start if not o.is_terminal]
     if open_ours and not cfg.dry_run:
         log.info("waiting for %d open order(s) from an earlier run", len(open_ours))
@@ -575,7 +673,8 @@ def _rebalance(
     # 7a. dry run ----------------------------------------------------------------------
     if cfg.dry_run:
         res.status = "dry_run"
-        res.reason = f"market gate would skip: {window}" if window else "market gate open"
+        gate = window or exec_window
+        res.reason = f"market gate would skip: {gate}" if gate else "market gate open"
         res.modelled_fees = model_fees(FeeFill(today, leg.side, leg.qty_est, leg.ref_price) for leg in legs)
         run.ledger.append({"event": "run_end", "rebalance_id": run.rebalance_id, "status": res.status,
                            "reason": res.reason, "modelled_fees_estimate": res.modelled_fees,
@@ -584,18 +683,68 @@ def _rebalance(
         return res
 
     if not planned:
-        res.status = "already_done" if ours_start else "nothing_to_do"
+        if ours_start:
+            res.status = "already_done"
+        elif any(sk.reason == FIRST_SESSION_PASSED for sk in skipped):
+            res.status, res.reason = "skipped", (
+                f"{FIRST_SESSION_PASSED}: legs of the {due.isoformat()} rebalance may only be opened on its "
+                f"scheduled session; today is session {n_session}, so drift waits for next month (an operator "
+                f"who knows no run evaluated {due.isoformat()} may rerun with --late-start)")
+            log.info("no action: %s", res.reason)
+        else:
+            res.status = "nothing_to_do"
     else:
         # 7b. sells, wait, then buys ------------------------------------------------------
         sells_ok = _execute_phase(run, "sell", targets, needed, quotes, clock)
         if sells_ok:
             _execute_phase(run, "buy", targets, needed, quotes, clock)
-        else:
+        elif not run.halted:
             run.note_incomplete("sells not terminal; buys not sent")
 
     # 8. reconcile, ledger, alert/ping --------------------------------------------------------
     _finish(run, cal, due, today)
     return res
+
+
+#: Statuses of a ``run_end`` record that mean the rebalance was evaluated (its new legs are closed).
+EVALUATED_STATUSES = ("completed", "already_done", "nothing_to_do")
+FIRST_SESSION_PASSED = "first_session_passed"
+
+
+def _new_leg_gate(run: _Run, ours_start: Sequence[Order], n_session: int, today: date, due: date) -> None:
+    """Decide whether this run may open new legs (attempt ``a1``); see the module docstring, step 5.
+
+    Broker state and the calendar decide; the local ledger can only close the gate further.
+    """
+    try:
+        records = run.ledger.read()
+    except (OSError, ValueError) as exc:  # e.g. a line cut short by a crash; the broker rule still applies
+        log.warning("ledger unreadable (%s); deciding new legs from broker state and the calendar only",
+                    type(exc).__name__)
+        records = []
+    evaluated = any(r.get("event") == "run_end" and r.get("rebalance_id") == run.rebalance_id
+                    and r.get("status") in EVALUATED_STATUSES for r in records)
+    if ours_start:
+        first_day = min(o.submitted_at for o in ours_start).astimezone(ET).date()
+        if first_day != today:
+            run.new_legs_allowed, run.new_legs_block = False, "rebalance_already_executed"
+        elif evaluated:
+            run.new_legs_allowed, run.new_legs_block = False, "rebalance_already_evaluated"
+        return
+    if evaluated:
+        run.new_legs_allowed, run.new_legs_block = False, "rebalance_already_evaluated"
+        if run.cfg.late_start:
+            log.warning("--late-start ignored: the ledger shows the %s rebalance was already evaluated",
+                        due.isoformat())
+        return
+    if n_session > 1 and not run.cfg.late_start:
+        run.new_legs_allowed, run.new_legs_block = False, FIRST_SESSION_PASSED
+        return
+    if n_session > 1:
+        log.warning("late start (operator confirmed): opening legs of the %s rebalance on session %d (%s)",
+                    due.isoformat(), n_session, today.isoformat())
+        run.ledger.append({"event": "late_start", "rebalance_id": run.rebalance_id, "session": n_session,
+                           "dry_run": run.cfg.dry_run})
 
 
 def _previous_rebalance_date(cal: Sequence[CalendarDay], due: date) -> date | None:
@@ -616,6 +765,10 @@ def _execute_phase(
     all_terminal = True
     for _round in range(cfg.max_attempts + 1):  # last round only detects residuals left at max attempts
         orders_since = broker.list_orders("all", after=run.rebalance_start)
+        foreign_open = [o for o in orders_since if not o.client_order_id.startswith(run.prefix) and not o.is_terminal]
+        if foreign_open:
+            raise GuardViolation("foreign_open_orders",
+                                 f"an order not placed by this rebalance appeared mid-run ({foreign_open[0].symbol})")
         states = run.leg_states(run.ours(orders_since))
         positions = _positions(broker)
         check_positions_whitelist(positions, cfg.universe, cfg.cash_symbol)
@@ -644,6 +797,8 @@ def _execute_phase(
                         orders_so_far=run.submitted_count)
         cids = []
         for leg, attempt in eligible:
+            if run.halted:
+                break
             cid = make_client_order_id(run.rebalance_id, leg.symbol, leg.side, attempt)
             req = planning.build_order_request(leg, cid)
             check_order_request(req, leg, positions.get(leg.symbol, Decimal(0)))
@@ -654,7 +809,7 @@ def _execute_phase(
             if order is not None:
                 cids.append(order.client_order_id)
         final = run.wait_terminal(cids)
-        if len(final) < len(cids):
+        if len(final) < len(cids) or run.halted:
             all_terminal = False
             break
     return all_terminal
@@ -687,7 +842,7 @@ def _finish(run: _Run, cal: Sequence[CalendarDay], due: date, today: date) -> No
         "modelled_fees_by_day": res.modelled_fees, "modelled_dividends": res.modelled_dividends,
         "reconciliation": res.reconciliation, "alerts": res.alerts,
     })
-    if res.status in ("completed", "already_done", "nothing_to_do"):
+    if res.status in ("completed", "already_done", "nothing_to_do", "skipped"):
         run.alerter.ping_success()
 
 

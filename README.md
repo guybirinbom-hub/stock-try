@@ -7,6 +7,22 @@ buying and holding an index fund after costs. The decision behind it is in
 
 All results are **hypothetical backtests**. Past performance does not indicate future results.
 
+## Outcome, in two sentences
+
+Every candidate strategy tested here (three SPY trend filters and two diversified trend allocations) was
+**rejected** by the pre-registered acceptance gates, so buying and holding a broad index fund (SPY) remains the
+benchmark to beat, and nothing in this repository has beaten it. The system spends **zero LLM tokens at runtime**:
+the backtests, reports and paper-trading runner are deterministic Python.
+
+## Documents
+
+| document | what it is |
+|---|---|
+| [`docs/research-report.md`](docs/research-report.md) | the research, the decision and the pre-registered gates (start here) |
+| [`docs/methodology.md`](docs/methodology.md) | how every number in `results/` is produced |
+| [`docs/runbook-paper-trading.md`](docs/runbook-paper-trading.md) | step-by-step paper trading: simulator, Alpaca paper account, scheduling, kill switches |
+| [`results/summary.md`](results/summary.md) | headline results next to SPY buy-and-hold and 60/40, and the Gate A scorecard |
+
 ## Quickstart
 
 ```bash
@@ -21,7 +37,29 @@ python3.11 -m venv .venv
 ```
 
 `run_backtests.py` fetches data first if the cache is empty. Use `scripts/fetch_data.py --refresh` to update prices.
-Vendor data lives in `data/` (gitignored) and is never committed.
+Vendor data lives in `data/` (gitignored) and is never committed. CI installs every dependency, transitive ones
+included, from the hash-locked `requirements.lock` (`pip install --require-hashes -r requirements.lock`).
+
+## Commands
+
+```bash
+# the whole offline test suite (a socket guard blocks network access)
+.venv/bin/python -m pytest -q
+
+# every backtest, validation test and cross-check; rewrites results/ (about 3 minutes)
+.venv/bin/python scripts/run_backtests.py
+
+# paper-trading runner on the local simulator: prints the plan, sends nothing (no keys, no network)
+.venv/bin/python scripts/paper_rebalance.py --broker sim --targets-json tests/fixtures/sample_targets.json \
+  --capital 100 --dry-run
+
+# Alpaca PAPER account, dry run (prints the plan, sends nothing). Export the paper keys in your shell only,
+# never in a file in this repository; prices come from Alpaca's own market data (IEX feed).
+export APCA_API_KEY_ID='PK...' APCA_API_SECRET_KEY='...'
+.venv/bin/python scripts/paper_rebalance.py --broker alpaca --strategy spy_buy_hold --dry-run
+```
+
+Read the runbook before adding `--no-dry-run`; live trading needs three separate switches and is not recommended.
 
 ## What is in `results/`
 

@@ -29,15 +29,23 @@ Accounting
   leaving cash drag. In whole-share mode dividends between rebalances are
   still treated as reinvested (adjusted-price accounting), which slightly
   flatters whole-share results.
-* Sells execute before buys. Sells are quantity orders; buys are dollar
-  notional orders (fractional: rounded down to the cent) that pay the ask,
-  so the half-spread shows up as fewer units. If buys exceed the cash
-  available, all buys are scaled down pro rata. Share quantities are
-  truncated to 9 decimals. Orders below the $1 minimum are skipped, except a
-  sell that closes the whole position; skips larger than 0.01% of equity are
-  logged in ``skipped`` (smaller ones are cent-level drift from fee debits). Regulatory fees are debited after the
-  day's orders (as the broker posts them), so cash can dip a few cents below
-  zero; negative cash accrues at the T-bill rate.
+* Sells execute before buys. Sells are quantity orders filled at the bid
+  (mid x (1 - half-spread)); their notional, and the SEC fee base, is those
+  proceeds. Buys are dollar notional orders (fractional: rounded down to the
+  cent) that pay the ask, so the half-spread shows up as fewer units. If buys
+  exceed the cash available, all buys are scaled down pro rata. Share
+  quantities are truncated to 9 decimals.
+* Minimum order size (Alpaca: $1 for *buy* entry orders only): buys below
+  ``costs.min_notional`` are skipped, and skips larger than 0.01% of equity are
+  logged in ``skipped``. Sells have no dollar minimum: a partial sell is sent
+  when it is at least ``costs.min_sell_notional`` (one cent, since a notional
+  order is whole cents); a full exit sells the whole position, any size.
+* Regulatory fees are debited after the day's orders (as the broker posts
+  them). Buys never spend the cash those fees need: if the day's buys would
+  leave less cash than the day's fees, the buys are re-sized from
+  ``cash - fees``. Cash therefore never goes negative, which also means no
+  cent-sized sells are ever generated just to cover a fee debit (the paper
+  runner keeps a similar cash buffer for the same reason).
 * **Cash** (``cash_symbol=None``) earns the T-bill daily accrual described in
   :mod:`stocktry.data.rates` (DTB3 of the previous trading day / 100 / 252 per
   trading day), applied to the balance at the start of each day. With a
@@ -176,6 +184,11 @@ def run_backtest(spec: StrategySpec, panel: PricePanel, config: EngineConfig | N
     i1 = int(cal.get_loc(end_date))
     if i1 <= i0:
         raise EngineError("end must be after start")
+    for c in cols:
+        last = panel.closes[c].last_valid_index()
+        if last is None or end_date > last:
+            raise EngineError(f"end {end_date.date()} is after {c}'s last bar ({None if last is None else last.date()}); "
+                              "a series is never carried flat past its data")
 
     n = len(cols)
     closes = panel.closes[cols].to_numpy(dtype=float)
@@ -242,7 +255,7 @@ def run_backtest(spec: StrategySpec, panel: PricePanel, config: EngineConfig | N
             return
         rawp = np.where(valid, p * rawf[i], np.nan)
         tgt_val = w * V
-        sells: list[tuple[int, float, float, bool]] = []  # (j, shares, notional, full_exit)
+        sells: list[tuple[int, float, bool]] = []  # (j, as-traded shares, full_exit)
         buys: list[tuple[int, float]] = []  # (j, desired as-traded shares)
         for j in range(n):
             if not valid[j]:
@@ -261,37 +274,41 @@ def run_backtest(spec: StrategySpec, panel: PricePanel, config: EngineConfig | N
             else:
                 tgt_sh = math.floor(tgt_val[j] / rawp[j] + 1e-9)
                 sh = float(tgt_sh - math.floor(cur_sh + 1e-9))
-            notional = abs(sh) * rawp[j] * ((1.0 + hs[j]) if sh > 0 else 1.0)
-            if notional <= 0:
-                continue
-            if notional < costs.min_notional and not full_exit:
-                if notional >= max(0.005, SKIP_LOG_FRACTION * V):
-                    skip_rows.append((day, signal_date, cols[j], "sell" if sh < 0 else "buy", notional,
-                                      f"below ${costs.min_notional:g} minimum"))
-                continue
             if sh < 0:
-                sells.append((j, -sh, notional, full_exit))
-            else:
+                # No dollar minimum on sells; a partial sell below one cent cannot be expressed as an order.
+                if not full_exit and -sh * rawp[j] < costs.min_sell_notional - 1e-12:
+                    continue
+                sells.append((j, -sh, full_exit))
+            elif sh > 0:
+                notional = sh * rawp[j] * (1.0 + hs[j])
+                if notional < costs.min_notional:
+                    if notional >= max(0.005, SKIP_LOG_FRACTION * V):
+                        skip_rows.append((day, signal_date, cols[j], "buy", notional,
+                                          f"below ${costs.min_notional:g} buy minimum"))
+                    continue
                 buys.append((j, sh))
         orders: list[Order] = []
         spread_cost = 0.0
         sold = bought = 0.0
-        for j, sh, notional, full_exit in sells:
-            proceeds = notional * (1.0 - hs[j])
+        for j, sh, full_exit in sells:
+            mid = sh * rawp[j]
+            proceeds = mid * (1.0 - hs[j])  # the sale executes at the bid; SEC is charged on these proceeds
             cash += proceeds
-            spread_cost += notional * hs[j]
-            units[j] = 0.0 if full_exit else max(units[j] - notional / p[j], 0.0)
-            sold += notional
-            orders.append(Order(cols[j], "sell", notional, sh))
-            trade_rows.append((day, signal_date, cols[j], "sell", sh, rawp[j], notional, notional * hs[j]))
-        if buys:
+            spread_cost += mid * hs[j]
+            units[j] = 0.0 if full_exit else max(units[j] - mid / p[j], 0.0)
+            sold += proceeds
+            orders.append(Order(cols[j], "sell", proceeds, sh))
+            trade_rows.append((day, signal_date, cols[j], "sell", sh, rawp[j], proceeds, mid * hs[j]))
+
+        def size_buys(avail: float) -> tuple[list[tuple[int, float, float]], float]:
+            """(j, as-traded shares, cash paid) for each buy funded from ``avail`` dollars."""
             # A buy pays its notional at the ask (mid * (1 + half-spread)); the spread shows up as fewer
             # units received. Fractional buys are dollar-notional orders rounded down to the cent (as at
             # Alpaca); whole-share buys pay shares * ask.
             pay = [sh * rawp[j] * (1.0 + hs[j]) for j, sh in buys]
             need = sum(pay)
-            avail = max(cash, 0.0)
-            scale = min(1.0, avail / need) if need > 0 else 0.0
+            scale = min(1.0, max(avail, 0.0) / need) if need > 0 else 0.0
+            out = []
             for (j, sh), x in zip(buys, pay):
                 ask = rawp[j] * (1.0 + hs[j])
                 if fractionable[j]:
@@ -301,22 +318,38 @@ def run_backtest(spec: StrategySpec, panel: PricePanel, config: EngineConfig | N
                     if scale < 1.0:
                         sh = float(math.floor(sh * scale))
                     x = sh * ask
-                if x <= 0:
-                    continue
-                if x < costs.min_notional:
-                    if x >= max(0.005, SKIP_LOG_FRACTION * V):
-                        skip_rows.append((day, signal_date, cols[j], "buy", x,
-                                          f"below ${costs.min_notional:g} minimum"
-                                          + (" after cash scaling" if scale < 1.0 else "")))
-                    continue
-                mid_value = sh * rawp[j]
-                fill = sh * ask  # cash actually paid for the (truncated) quantity; <= the order notional x
-                cash -= fill
-                spread_cost += fill - mid_value
-                units[j] += mid_value / p[j]
-                bought += fill
-                orders.append(Order(cols[j], "buy", fill, sh))
-                trade_rows.append((day, signal_date, cols[j], "buy", sh, rawp[j], fill, fill - mid_value))
+                out.append((j, sh, x))
+            return out, scale
+
+        sized, scale = size_buys(cash) if buys else ([], 1.0)
+        note = " after cash scaling" if scale < 1.0 else ""
+        if sized:
+            # Fee reserve: the day's regulatory fees are debited after the orders; never let the buys spend
+            # that cash (so cash cannot go negative and no cent-sized sells are needed to cover fees later).
+            trial = orders + [Order(cols[j], "buy", sh * rawp[j] * (1.0 + hs[j]), sh)
+                              for j, sh, x in sized if x > 0 and x >= costs.min_notional]
+            fee_est = costs.day_fees(day, trial).total
+            paid = sum(sh * rawp[j] * (1.0 + hs[j]) for j, sh, x in sized if x > 0 and x >= costs.min_notional)
+            if fee_est > 0 and cash - paid < fee_est:
+                sized, scale = size_buys(cash - fee_est)
+                note = " after reserving the day's fees"
+        for j, sh, x in sized:
+            if x <= 0:
+                continue
+            if x < costs.min_notional:
+                if x >= max(0.005, SKIP_LOG_FRACTION * V):
+                    skip_rows.append((day, signal_date, cols[j], "buy", x,
+                                      f"below ${costs.min_notional:g} buy minimum" + note))
+                continue
+            mid_value = sh * rawp[j]
+            ask = rawp[j] * (1.0 + hs[j])
+            fill = sh * ask  # cash actually paid for the (truncated) quantity; <= the order notional x
+            cash -= fill
+            spread_cost += fill - mid_value
+            units[j] += mid_value / p[j]
+            bought += fill
+            orders.append(Order(cols[j], "buy", fill, sh))
+            trade_rows.append((day, signal_date, cols[j], "buy", sh, rawp[j], fill, fill - mid_value))
         fees = costs.day_fees(day, orders)
         cash -= fees.total
         rebal_rows.append({

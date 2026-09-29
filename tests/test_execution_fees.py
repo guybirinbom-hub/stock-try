@@ -73,10 +73,9 @@ def test_parity_with_backtest_cost_model_when_available():
         assert float(ours["cat"]) == pytest.approx(theirs.cat, abs=1e-9)
 
 
-@pytest.mark.xfail(strict=False, reason=(
-    "core stocktry.backtest.costs.ceil_cent computes ceil(round(x*100, 6))/100, which turns a CAT fee "
-    "below $0.000000005 (a ~$1 order) into $0.00; the fee schedule and the core docstring say $0.01"))
 def test_parity_on_one_dollar_orders():
+    """A ~$1 order's CAT fee is a fraction of a cent and rounds UP to $0.01 in both fee models (the core
+    ceil_cent bug that once rounded it to $0.00 is fixed; this test used to be xfail)."""
     for case in ([("buy", 1.0, 600.0)], [("sell", 1.0, 600.0)]):
         ours, theirs = _compare(case)
         assert float(ours["cat"]) == pytest.approx(theirs.cat, abs=1e-9)

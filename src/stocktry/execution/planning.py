@@ -7,14 +7,17 @@ Rules
 -----
 * Targets are for risky symbols only; the remainder is cash. When the strategy
   names a ``cash_symbol`` (e.g. BIL) the remainder is bought in it instead.
-* A leg whose dollar change is below the $1 broker minimum is skipped (left as
-  drift) and recorded. A *new* position whose whole target value is below $1
-  cannot be established at all; that is an "impossible leg" and the runner
-  aborts the whole rebalance rather than trade a distorted portfolio.
-* Full exits (target weight 0 for a held symbol) sell the exact held quantity
-  (``qty``), because a notional sell of the full value is rejected whenever the
-  price ticks down before the fill and otherwise leaves unsellable dust. Every
-  other leg is notional (dollars) with no ``qty``.
+* Alpaca's $1 minimum applies to **buy** entry orders only. A buy leg below
+  $1 is skipped (left as drift) and recorded. A *new* position whose whole
+  target value is below $1 cannot be established at all; that is an
+  "impossible leg" and the runner aborts the whole rebalance rather than trade
+  a distorted portfolio.
+* Sells have no dollar minimum. A partial sell (trim) is a notional order in
+  whole cents, sent when it rounds down to at least $0.01. Full exits (target
+  weight 0 for a held symbol) sell the exact held quantity (``qty``) of any
+  size, because a notional sell of the full value is rejected whenever the
+  price ticks down before the fill. Every other leg is notional (dollars) with
+  no ``qty``. (Same rule as the backtest engine.)
 * Buys are funded only from ``min(cash, non_marginable_buying_power)`` minus a
   small cash buffer for fees; if the planned buys exceed that, they are scaled
   down pro rata. ``buying_power`` (which includes margin) is never used.
@@ -200,6 +203,7 @@ def plan_rebalance(
     cash_symbol: str | None = None,
     allow_exit_to_cash: bool = False,
     sides: tuple[str, ...] = ("sell", "buy"),
+    min_sell_notional: Decimal = CENT,
 ) -> Plan:
     """Compute order legs.
 
@@ -207,6 +211,8 @@ def plan_rebalance(
     ``equity`` dollars used to turn weights into target values;
     ``cash_available`` = min(cash, non_marginable_buying_power) *before* the
     sells of this plan fill (the planned sell proceeds are added for buys).
+    ``min_notional`` is the minimum *buy*; ``min_sell_notional`` (one cent) the
+    smallest partial sell. Full exits have no minimum.
     """
     tgt_full = full_targets(targets, cash_symbol)
     symbols = sorted(set(tgt_full) | {s for s, q in positions.items() if q > 0})
@@ -232,24 +238,22 @@ def plan_rebalance(
         delta = tgt - cur
         if delta < 0 and "sell" in sides:
             if w == 0.0 and q > 0:
-                if cur < min_notional:
-                    skipped.append(SkippedLeg(sym, "sell", _down(cur), "dust_below_min_notional"))
-                    continue
+                # full exit: a quantity sell of the whole position, any size (no minimum on sells)
                 sells.append(
                     PlannedOrder(sym, "sell", None, q, q, px, w, cur, tgt, close_position=True,
                                  exempt_from_caps=allow_exit_to_cash)
                 )
-            elif -delta >= min_notional:
+            elif _down(-delta) >= min_sell_notional:
                 sells.append(PlannedOrder(sym, "sell", _down(-delta), None, -delta / px, px, w, cur, tgt))
             else:
-                skipped.append(SkippedLeg(sym, "sell", _down(-delta), "below_min_notional"))
+                skipped.append(SkippedLeg(sym, "sell", _down(-delta), "below_one_cent"))
         elif delta > 0 and "buy" in sides:
             if q == 0 and w > 0 and tgt < min_notional:
                 impossible.append(SkippedLeg(sym, "buy", _down(tgt), "target_value_below_min_notional"))
             elif delta >= min_notional:
                 buys_raw.append((sym, delta, px, cur, w, tgt))
             else:
-                skipped.append(SkippedLeg(sym, "buy", _down(delta), "below_min_notional"))
+                skipped.append(SkippedLeg(sym, "buy", _down(delta), "below_min_notional"))  # $1 buy minimum
 
     sell_proceeds = sum((s.est_notional for s in sells), Decimal(0))
     budget = cash_available + sell_proceeds - cash_buffer

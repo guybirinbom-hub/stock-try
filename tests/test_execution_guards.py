@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -110,8 +110,18 @@ def test_position_outside_universe_refused(tmp_path):
 
 
 def test_cash_symbol_in_targets_refused(tmp_path):
-    sc = scenario(tmp_path, cfg_overrides={"cash_symbol": "GLD", "universe": ("SPY", "IEF")})
+    # BIL (not GLD): since EXEC-19 only T-bill ETFs may be a cash symbol, so GLD would trip that guard first
+    sc = scenario(tmp_path, prices={"SPY": 500.0, "IEF": 95.0, "GLD": 250.0, "BIL": 91.5},
+                  targets={"SPY": 0.5, "IEF": 0.3, "BIL": 0.2}, cfg_overrides={"cash_symbol": "BIL"})
     blocked(sc, "cash_symbol_in_targets")
+
+
+def test_cash_symbol_must_be_a_t_bill_etf(tmp_path):
+    """EXEC-19: buys of the cash symbol after a declared exit are exempt from the size caps, so an arbitrary
+    (e.g. leveraged) symbol declared as 'cash' is refused before anything is planned."""
+    sc = scenario(tmp_path, targets={"SPY": 0.5, "IEF": 0.3},
+                  cfg_overrides={"cash_symbol": "GLD", "universe": ("SPY", "IEF"), "allow_exit_to_cash": True})
+    blocked(sc, "cash_symbol_not_cash_like")
 
 
 # --------------------------------------------------------------------- caps (8)
@@ -298,3 +308,47 @@ def test_quotes_from_frame_ignores_rows_after_session():
     q = planning.quotes_from_frame(frame, date(2026, 9, 30))
     assert q["SPY"] == PriceQuote(3.0, date(2026, 9, 30), 2.0)
     assert q["IEF"].session == date(2026, 9, 29)  # stale -> the freshness guard will refuse it
+
+
+# ------------------------------------------------- R3: the $1 minimum applies to buys only
+def test_planner_sells_any_size_but_buys_need_one_dollar():
+    plan = planning.plan_rebalance(
+        targets={"SPY": 0.5, "IEF": 0.5}, positions={"SPY": Decimal("0.0208"), "IEF": Decimal("0.0985"),
+                                                      "GLD": Decimal("0.0012")},
+        prices={"SPY": Decimal(500), "IEF": Decimal(95), "GLD": Decimal(250)}, equity=Decimal("20.70"),
+        cash_available=Decimal("0.02"), cash_buffer=Decimal("0.10"), min_notional=Decimal(1),
+    )
+    by = {(l.symbol, l.side): l for l in plan.legs}
+    # SPY $10.40 vs target $10.35 -> a $0.05 trim is a notional sell
+    assert by[("SPY", "sell")].notional == Decimal("0.05") and not by[("SPY", "sell")].close_position
+    # GLD $0.30, target 0 -> a full exit of any size, as a quantity sell
+    assert by[("GLD", "sell")].close_position and by[("GLD", "sell")].qty == Decimal("0.0012")
+    # IEF $9.36 vs target $10.35 -> a $0.99 buy is below the $1 buy minimum
+    assert ("IEF", "buy") not in by
+    assert [(s.symbol, s.side, s.reason) for s in plan.skipped] == [("IEF", "buy", "below_min_notional")]
+
+
+def test_sub_dollar_trim_passes_the_units_check_and_the_sim_accepts_it(tmp_path):
+    leg = PlannedOrder("SPY", "sell", Decimal("0.05"), None, Decimal("0.059") / Decimal(500), Decimal(500), 0.5,
+                       Decimal("10.40"), Decimal("10.341"))
+    check_order_request(OrderRequest("SPY", "sell", "x-a1", notional=Decimal("0.05")), leg, Decimal("0.0208"))
+    with pytest.raises(GuardViolation) as ei:  # a units bug (dollars sent as cents) is still caught
+        check_order_request(OrderRequest("SPY", "sell", "x-a1", notional=Decimal("5.00")), leg, Decimal("0.0208"))
+    assert ei.value.code == "units_mismatch"
+    sim = scenario(tmp_path).broker
+    o = sim.submit_order("SPY", "sell", notional=Decimal("0.05"), client_order_id="x-2026-10-01-SPY-sell-a1")
+    assert o.status == "filled"
+    from stocktry.execution.broker import OrderRejected
+
+    with pytest.raises(OrderRejected, match="buy"):
+        sim.submit_order("IEF", "buy", notional=Decimal("0.99"), client_order_id="x-2026-10-01-IEF-buy-a1")
+
+
+# ------------------------------------------------- EXEC-15: the run's own deadline
+def test_no_order_is_sent_after_the_run_deadline(tmp_path):
+    sc = scenario(tmp_path)
+    ticks = iter(range(10**6))  # the local clock advances one second per reading
+    sc.cfg = replace(sc.cfg, deadline_s=0.5, local_now=lambda: sc.broker.now + timedelta(seconds=next(ticks)))
+    res = sc.run()
+    assert sc.broker.orders == [] and res.status == "incomplete" and res.exit_code == 1
+    assert "submissions_stopped" in res.alerts

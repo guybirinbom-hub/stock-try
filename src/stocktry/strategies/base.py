@@ -13,8 +13,15 @@ Contract (shared with the execution builder):
 * must use only rows at or before ``asof``.
 
 Extra fields beyond the contract (``params``, ``family``, ``signal_offset``,
-``rebalance_months``, ``description``) have defaults so the contract fields
-stay positional-compatible.
+``rebalance_months``, ``description``, ``allows_exit_to_cash``,
+``uses_tbill``) have defaults so the contract fields stay positional-compatible.
+
+``allows_exit_to_cash`` is the strategy's own declaration that its rule may move
+most or all of the portfolio to cash by design (trend filters, GTAA). The paper
+runner reads it: an undeclared strategy that suddenly targets cash is treated as
+a bug and blocked. It defaults to False (the safe value). ``uses_tbill`` marks
+rules that read the ``"^TBILL"`` column (absolute momentum), so the paper
+runner loads the T-bill series only for them.
 """
 from __future__ import annotations
 
@@ -41,6 +48,8 @@ class StrategySpec:
     signal_offset: int = -1  # -1 = last trading day of month; k = k-th trading day (tranches)
     rebalance_months: tuple[int, ...] | None = None  # None = every month; (12,) = annually after Dec
     description: str = ""
+    allows_exit_to_cash: bool = False  # the rule may target (mostly) cash by design; see module docstring
+    uses_tbill: bool = False  # the rule reads the "^TBILL" column
 
 
 def monthly_values(series: pd.Series, offset: int = -1) -> np.ndarray:

@@ -108,8 +108,7 @@ def test_tiers_and_scaling():
     assert f2.sec == pytest.approx(2 * f1.sec)
 
 
-def test_engine_dollar_one_round_trip():
-    """$1 in, out a month later, through the engine: $0.04 of fees and the spread on both sides."""
+def _round_trip(capital: float):
     idx = pd.bdate_range("2026-05-01", "2026-08-31")
     panel = panel_from_bars({"SPY": make_bars(np.full(len(idx), 600.0), dates=idx)}, None)
     state = {}
@@ -119,8 +118,17 @@ def test_engine_dollar_one_round_trip():
         return {"SPY": 1.0} if state[a] else {}
 
     spec = StrategySpec("rt", ["SPY"], None, fn)
-    res = run_backtest(spec, panel, EngineConfig(initial_capital=1.0, costs=CostModel.modelled(), start="2026-05",
-                                                 cash_yield=False))
+    return run_backtest(spec, panel, EngineConfig(initial_capital=capital, costs=CostModel.modelled(),
+                                                  start="2026-05", cash_yield=False))
+
+
+def test_engine_dollar_one_round_trip():
+    """$1 in, out a month later, through the engine: $0.04 of fees and the spread on both sides.
+
+    The account starts with $1.01: buys never spend the cash the day's fees need (cash never goes
+    negative, like the paper runner's cash buffer), so a $1.00 buy needs $1.00 + the $0.01 CAT fee.
+    """
+    res = _round_trip(1.01)
     assert len(res.trades) == 2
     buy, sell = res.trades.iloc[0], res.trades.iloc[1]
     hs = 0.5e-4
@@ -130,4 +138,46 @@ def test_engine_dollar_one_round_trip():
     assert sell["shares"] == pytest.approx(buy["shares"], abs=1e-12)  # full exit, allowed below $1
     assert res.total_fees == pytest.approx(0.04)
     assert res.total_spread_cost == pytest.approx(2 * buy["shares"] * 600 * hs, rel=1e-9)
-    assert res.equity.iloc[-1] == pytest.approx(1.0 - 0.04 - res.total_spread_cost, abs=1e-12)
+    assert res.equity.iloc[-1] == pytest.approx(1.01 - 0.04 - res.total_spread_cost, abs=1e-12)
+    assert (res.cash >= 0).all()
+
+
+def test_a_one_dollar_account_cannot_buy_one_dollar_and_pay_the_fee():
+    """$1.00 cash: a $1.00 buy would leave -$0.01 after CAT; re-sized to $0.99 it is below the $1 buy minimum,
+    so it is skipped and logged. Cash never goes negative."""
+    res = _round_trip(1.00)
+    assert len(res.trades) == 0 and (res.cash >= 0).all()
+    assert len(res.skipped) == 1 and res.skipped.iloc[0]["side"] == "buy"
+    assert "buy minimum" in res.skipped.iloc[0]["reason"] and "fees" in res.skipped.iloc[0]["reason"]
+
+
+def test_sells_have_no_dollar_minimum_but_buys_do():
+    """R3: Alpaca's $1 minimum applies to buy entry orders only. A $0.40 trim of an over-weight position is sold;
+    the matching $0.40 top-up buy is skipped and logged."""
+    idx = pd.bdate_range("2026-01-02", "2026-04-30")
+    a = np.full(len(idx), 100.0)
+    b = np.full(len(idx), 100.0)
+    mar = idx >= pd.Timestamp("2026-03-01")
+    a[mar], b[mar] = 104.0, 96.0  # after the first rebalance (filled 2026-02-02) A drifts up 4%, B down 4%
+    panel = panel_from_bars({"AAA": make_bars(a, dates=idx), "BBB": make_bars(b, dates=idx)}, None)
+    spec = StrategySpec("half", ["AAA", "BBB"], None, lambda c, t: {"AAA": 0.5, "BBB": 0.5})
+    res = run_backtest(spec, panel, EngineConfig(initial_capital=20.0, costs=CostModel.modelled(), start="2026-01",
+                                                 cash_yield=False))
+    later = res.trades[res.trades["exec_date"] > pd.Timestamp("2026-03-01")]
+    sells = later[later["side"] == "sell"]
+    assert len(sells) >= 1 and (sells["notional"] < 1.0).all() and (sells["symbol"] == "AAA").all()
+    assert not (later["side"] == "buy").any()
+    sk = res.skipped[res.skipped["exec_date"] > pd.Timestamp("2026-03-01")]
+    assert len(sk) >= 1 and set(sk["side"]) == {"buy"} and (sk["symbol"] == "BBB").all()
+    assert (res.cash >= 0).all()
+
+
+def test_sell_notional_and_sec_base_are_the_bid_proceeds():
+    """CORE-13: a sell fills at the bid; its notional (and the SEC fee base) is shares x mid x (1 - half-spread)."""
+    idx = pd.bdate_range("2026-05-01", "2026-08-31")
+    panel = panel_from_bars({"SPY": make_bars(np.full(len(idx), 600.0), dates=idx)}, None)
+    spec = StrategySpec("rt", ["SPY"], None, lambda c, a: {"SPY": 1.0} if a.month == 5 else {})
+    res = run_backtest(spec, panel, EngineConfig(initial_capital=1_000_000.0, costs=CostModel.gate(),
+                                                 start="2026-05", cash_yield=False))
+    sell = res.trades[res.trades["side"] == "sell"].iloc[0]
+    assert sell["notional"] == pytest.approx(sell["shares"] * 600.0 * (1 - 5e-4), rel=1e-12)

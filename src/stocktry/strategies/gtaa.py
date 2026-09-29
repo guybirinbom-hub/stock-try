@@ -46,4 +46,5 @@ def make_gtaa(sleeves: list[str] | None = None, lookback: int = 10, offset: int 
         params={"sleeves": sl, "lookback": lookback, "offset": offset},
         family=base, signal_offset=offset,
         description=f"Equal-weight {len(sl)} sleeves ({', '.join(sl)}), each only above its {lookback}-month SMA",
+        allows_exit_to_cash=True,
     )

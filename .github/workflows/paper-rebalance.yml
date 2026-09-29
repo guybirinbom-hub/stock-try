@@ -20,7 +20,10 @@ concurrency:
 jobs:
   rebalance:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # The runner stops sending orders 8 minutes after it starts (RunConfig.deadline_s = 480) and then cancels
+    # what is still open; the job timeout must comfortably exceed that so GitHub never kills the job between a
+    # submit and its cancel.
+    timeout-minutes: 20
     env:
       PIP_DISABLE_PIP_VERSION_CHECK: "1"
       PYTHONUNBUFFERED: "1"
@@ -31,16 +34,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - name: Install pinned dependencies
+      # This job receives the paper keys: every package (transitive ones included) is installed from the
+      # hash-locked requirements.lock, and the job FAILS rather than fall back to unpinned requirements.txt.
+      # The package itself is installed without build isolation, so the pinned setuptools builds it.
+      - name: Install hash-locked dependencies
         run: |
-          if [ -f requirements.lock ]; then
-            python -m pip install --require-hashes -r requirements.lock
-          elif [ -f requirements-hashed.txt ]; then
-            python -m pip install --require-hashes -r requirements-hashed.txt
-          else
-            python -m pip install -r requirements.txt
+          if [ ! -f requirements.lock ]; then
+            echo "requirements.lock is missing: refusing to install unpinned dependencies next to the paper keys"
+            exit 1
           fi
-          python -m pip install --no-deps -e .
+          python -m pip install --require-hashes -r requirements.lock
+          python -m pip install --no-deps --no-build-isolation -e .
 
       # PAPER keys only. Never store live keys in GitHub. LIVE_TRADING is never set here,
       # so even a live key could not trade: the runner needs LIVE_TRADING=yes-live AND
@@ -59,9 +63,12 @@ jobs:
           HEALTHCHECK_URL: ${{ secrets.HEALTHCHECK_URL }}
           KILL_SWITCH: ${{ vars.KILL_SWITCH || 'off' }}
           PAPER_STRATEGY: ${{ vars.PAPER_STRATEGY || 'spy_buy_hold' }}
+          # Prices come from Alpaca Market Data (licensed through the account), never from Yahoo.
+          # Paper-only accounts are entitled to the IEX feed only.
+          APCA_DATA_FEED: ${{ vars.APCA_DATA_FEED || 'iex' }}
         run: |
           python scripts/paper_rebalance.py --broker alpaca --strategy "$PAPER_STRATEGY" \
-            --dry-run --ledger "data/ledger/${PAPER_STRATEGY}.jsonl"
+            --price-source alpaca --dry-run --ledger "data/ledger/${PAPER_STRATEGY}.jsonl"
 
       - name: Keep the shadow ledger (private artifact, 90 days)
         if: always()

@@ -36,6 +36,7 @@ __all__ = [
     "release_broker_kill_switch",
     "live_authorized",
     "check_submission_mode",
+    "source_checkout_root",
 ]
 
 KILL_SWITCH_ENV = "KILL_SWITCH"
@@ -45,16 +46,33 @@ LIVE_ENV_VALUE = "yes-live"
 RELEASE_CONFIRMATION = "release-broker-kill-switch"
 
 
-def default_kill_switch_path(env: Mapping[str, str] | None = None) -> Path:
-    """``$KILL_SWITCH_FILE`` if set, else ``<repo root>/KILL_SWITCH``.
+def source_checkout_root() -> Path:
+    """The repository root, derived from this file's location (``src/stocktry/execution/``).
 
-    The repo root is derived from this file's location (src/stocktry/execution/),
-    which is correct for a source checkout or an editable install.
+    Correct only for a source checkout or an editable install; after a non-editable
+    ``pip install .`` this file lives in site-packages and the derived "root" is
+    not the repository, so a committed ``KILL_SWITCH`` file would be silently
+    ignored. The root must contain ``pyproject.toml``; otherwise this raises.
     """
+    root = Path(__file__).resolve().parents[3]
+    if not (root / "pyproject.toml").is_file():
+        raise RuntimeError(
+            f"stocktry is not running from a source checkout ({root} has no pyproject.toml); install it with "
+            "`pip install -e .` or set KILL_SWITCH_FILE and pass --ledger explicitly")
+    return root
+
+
+def default_kill_switch_path(env: Mapping[str, str] | None = None) -> Path:
+    """``$KILL_SWITCH_FILE`` if set, else ``<repo root>/KILL_SWITCH`` (source checkout only, see
+    :func:`source_checkout_root`)."""
     env = os.environ if env is None else env
     if env.get(KILL_SWITCH_FILE_ENV):
         return Path(env[KILL_SWITCH_FILE_ENV])
-    return Path(__file__).resolve().parents[3] / "KILL_SWITCH"
+    try:
+        return source_checkout_root() / "KILL_SWITCH"
+    except RuntimeError as exc:
+        # Fail safe: without a verifiable kill-switch location nothing may trade.
+        raise KillSwitchEngaged("kill_switch_path_unknown", str(exc)) from None
 
 
 def check_kill_switches(env: Mapping[str, str], path: Path) -> None:

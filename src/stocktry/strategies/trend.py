@@ -35,6 +35,7 @@ def make_trend_sma(symbol: str = "SPY", lookback: int = 10, offset: int = -1, na
         params={"symbol": symbol, "rule": "sma", "lookback": lookback, "offset": offset},
         family="trend_sma", signal_offset=offset,
         description=f"{symbol} above its {lookback}-month SMA, else T-bills",
+        allows_exit_to_cash=True,
     )
 
 
@@ -52,6 +53,7 @@ def make_trend_absmom(symbol: str = "SPY", lookback: int = 12, offset: int = -1,
         params={"symbol": symbol, "rule": "absmom", "lookback": lookback, "offset": offset},
         family="trend_absmom", signal_offset=offset,
         description=f"{symbol} {lookback}-month return above T-bills, else T-bills",
+        allows_exit_to_cash=True, uses_tbill=True,
     )
 
 
@@ -78,4 +80,5 @@ def make_trend_ensemble(symbol: str = "SPY", lookbacks: Iterable[int] = range(6,
         params={"symbol": symbol, "rules": list(rules), "lookbacks": list(lbs), "offset": offset},
         family="trend_ensemble", signal_offset=offset,
         description=f"{symbol} exposure = share of {len(lbs)*len(rules)} SMA/abs-momentum signals (6-12m) that are on",
+        allows_exit_to_cash=True, uses_tbill="absmom" in rules,
     )

@@ -3,12 +3,16 @@
 Behaviour mirrors the Alpaca rules the runner depends on:
 
 * Fractional quantities to 9 decimal places; notional orders need a
-  fractionable asset, ``market`` type and ``day`` time-in-force; notional must
-  be at least $1.00 and at most 2 decimal places.
+  fractionable asset, ``market`` type and ``day`` time-in-force and at most 2
+  decimal places. A notional **buy** must be at least $1.00 (Alpaca's minimum
+  for buy entry orders); a notional sell at least $0.01.
 * ``client_order_id`` must be unique (``DuplicateClientOrderId`` carries
   Alpaca's text ``client_order_id must be unique``), max 128 characters.
 * No shorting and no margin: sells are limited to the held quantity and buys
-  to cash (``non_marginable_buying_power`` == cash).
+  to ``non_marginable_buying_power`` = cash minus what open buy orders have
+  reserved (as Alpaca does).
+* A ``stopped`` order (a trade is guaranteed but has not happened yet) is open
+  and cannot be cancelled.
 * A market order submitted while the market is closed is *accepted* and left
   unfilled (Alpaca queues it for the next open). The runner's market-hours gate
   exists to make sure that never happens.
@@ -67,6 +71,9 @@ HARDENED_CONFIG = AccountConfig(
     fractional_trading=True,
     disable_overnight_trading=True,
 )
+
+#: Open states the simulator refuses to cancel: a ``stopped`` order has a guaranteed trade pending.
+NON_CANCELABLE_STATUSES = frozenset({"stopped", "pending_cancel"})
 
 SUBMIT_FAILURE_MODES = frozenset(
     {"http_504_after_record", "timeout_after_record", "timeout_before_record", "http_429_before_record"}
@@ -247,15 +254,29 @@ class LocalSimBroker:
     def _equity(self) -> Decimal:
         return self.cash + sum((q * self.prices[s] for s, q in self.positions.items()), Decimal(0))
 
+    def _reserved_for_open_buys(self) -> Decimal:
+        """Dollars still committed to open buy orders (Alpaca deducts them from buying power)."""
+        out = Decimal(0)
+        for so in self._orders.values():
+            o = so.order
+            if o.side != "buy" or o.status not in OPEN_STATUSES:
+                continue
+            if o.notional is not None:
+                out += max(o.notional - o.filled_notional, Decimal(0))
+            elif o.qty is not None:
+                out += max(o.qty - o.filled_qty, Decimal(0)) * self.prices.get(o.symbol, Decimal(0))
+        return out
+
     def get_account(self) -> Account:
         self._maybe_fail("get_account")
         with self._lock:
             mult = Decimal(self.config.max_margin_multiplier)
+            available = max(self.cash - self._reserved_for_open_buys(), Decimal(0))
             return Account(
                 cash=self.cash,
                 equity=self._equity(),
-                non_marginable_buying_power=max(self.cash, Decimal(0)),
-                buying_power=max(self.cash, Decimal(0)) * mult,
+                non_marginable_buying_power=available,
+                buying_power=available * mult,
                 multiplier=self.config.max_margin_multiplier,
                 shorting_enabled=not self.config.no_shorting,
                 options_level=self.config.max_options_trading_level,
@@ -357,8 +378,10 @@ class LocalSimBroker:
                 raise OrderRejected(f"asset {symbol} is not fractionable")
             if tif != "day":
                 raise OrderRejected("notional orders must be DAY orders")
-            if notional < Decimal("1"):
-                raise OrderRejected("order notional must be >= 1.00")
+            if side == "buy" and notional < Decimal("1"):
+                raise OrderRejected("buy order notional must be >= 1.00")
+            if notional < CENT:
+                raise OrderRejected("order notional must be >= 0.01")
             if notional != notional.quantize(CENT):
                 raise OrderRejected("notional must have at most 2 decimal places")
         else:
@@ -381,7 +404,7 @@ class LocalSimBroker:
         held = self.positions.get(symbol, Decimal(0))
         if side == "sell" and total_qty > held:
             raise OrderRejected("insufficient qty available for order")
-        if side == "buy" and total_qty * fill_px > self.cash:
+        if side == "buy" and total_qty * fill_px > self.cash - self._reserved_for_open_buys():
             raise OrderRejected("insufficient buying power")
 
         self._seq += 1
@@ -488,7 +511,7 @@ class LocalSimBroker:
             so = self._orders.get(order_id)
             if so is None:
                 raise BrokerHTTPError(404, "order not found")
-            if so.order.status not in OPEN_STATUSES:
+            if so.order.status not in OPEN_STATUSES or so.order.status in NON_CANCELABLE_STATUSES:
                 raise OrderRejected("order is not cancelable")
             so.order = replace(so.order, status="canceled")
 

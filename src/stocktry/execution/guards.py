@@ -39,6 +39,8 @@ __all__ = [
     "MAX_ORDERS_PER_SYMBOL_PER_RUN",
     "MAX_TURNOVER_ONE_WAY",
     "MIN_ORDER_NOTIONAL",
+    "MIN_SELL_NOTIONAL",
+    "CASH_LIKE_SYMBOLS",
     "MAX_PRICE_MOVE",
     "WEIGHT_SUM_TOLERANCE",
     "UNITS_TOLERANCE",
@@ -57,7 +59,11 @@ MAX_ORDER_NOTIONAL_EQUITY_FRAC = Decimal("0.25")  # of equity, per order
 MAX_DAILY_NOTIONAL_EQUITY_FRAC = Decimal("0.60")  # of equity, gross buys+sells per ET day
 MAX_ORDERS_PER_SYMBOL_PER_RUN = 2  # max orders per run = 2 x number of tradable symbols
 MAX_TURNOVER_ONE_WAY = Decimal("1.0")  # (buys + sells) / (2 x equity) per rebalance
-MIN_ORDER_NOTIONAL = Decimal("1.00")  # Alpaca fractional minimum, dollars
+MIN_ORDER_NOTIONAL = Decimal("1.00")  # Alpaca minimum for BUY entry orders, dollars (sells: no minimum)
+MIN_SELL_NOTIONAL = Decimal("0.01")  # a partial (notional) sell is whole cents; full exits are qty sells
+#: ETFs a strategy may name as its ``cash_symbol``. Buys of the cash symbol after a declared exit are exempt
+#: from the size caps, so only short T-bill funds qualify (never an arbitrary, e.g. leveraged, symbol).
+CASH_LIKE_SYMBOLS = frozenset({"BIL", "SHV", "SGOV", "TBIL", "BILS"})
 MAX_PRICE_MOVE = Decimal("0.30")  # |close/prev_close - 1| and |live/close - 1|
 WEIGHT_SUM_TOLERANCE = 1e-9
 UNITS_TOLERANCE = Decimal("0.01")  # request dollars vs ref_price x qty_est
@@ -209,7 +215,7 @@ def check_weights(
             raise GuardViolation("weight_above_max", f"weight for {sym} ({wf}) exceeds max_weight {max_weight}")
         total += wf
     if total > 1.0 + WEIGHT_SUM_TOLERANCE:
-        raise GuardViolation("weights_sum_above_one", f"weights sum to {total:.12f} > 1")
+        raise GuardViolation("weights_sum_above_one", f"weights sum to {total:.10g}, above 1")
 
 
 def check_positions_whitelist(
@@ -371,13 +377,19 @@ def check_order_request(req: "OrderRequest", leg: "PlannedOrder", held_qty: Deci
         if req.qty is not None:
             raise GuardViolation("qty_on_notional_leg", "qty passed for a notional leg (units swap?)")
         assert req.notional is not None
-        if req.notional < MIN_ORDER_NOTIONAL:
-            raise GuardViolation("below_min_notional", f"notional ${req.notional} below $1 minimum")
+        if req.side == "buy" and req.notional < MIN_ORDER_NOTIONAL:
+            raise GuardViolation("below_min_notional", f"buy notional ${req.notional} below the $1 buy minimum")
+        if req.notional < MIN_SELL_NOTIONAL:
+            raise GuardViolation("below_min_notional", f"notional ${req.notional} is below one cent")
         if req.notional != req.notional.quantize(Decimal("0.01")):
             raise GuardViolation("notional_precision", "notional must be whole cents")
         implied = req.notional
     expected = leg.ref_price * leg.qty_est
-    if expected <= 0 or abs(implied / expected - 1) > UNITS_TOLERANCE:
+    # 1% relative (UNITS_TOLERANCE). A notional order is whole cents, so a sub-$1 trim (possible since sells have
+    # no $1 minimum) may differ from its intended dollars by up to one cent of rounding; that quantization is
+    # allowed and nothing else (for orders of $1 or more the 1% bound is the binding one, unchanged).
+    allowed = max(UNITS_TOLERANCE * expected, Decimal("0.01")) if not leg.close_position else UNITS_TOLERANCE * expected
+    if expected <= 0 or abs(implied - expected) > allowed:
         raise GuardViolation(
             "units_mismatch",
             f"request implies ${implied:.2f} but plan expects ${expected:.2f} "

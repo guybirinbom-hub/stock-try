@@ -26,6 +26,7 @@ def make_buy_and_hold(symbol: str = "SPY", name: str | None = None) -> StrategyS
         params={"symbol": symbol},
         family="buy_hold",
         description=f"Buy and hold 100% {symbol} (benchmark / null hypothesis)",
+        allows_exit_to_cash=False,  # a target of cash is always a bug for the benchmark
     )
 
 
@@ -55,4 +56,5 @@ def make_sixty_forty(equity: str = "SPY", bond: str = "AGG", equity_weight: floa
         family="sixty_forty",
         rebalance_months=(12,),
         description=f"{equity_weight:.0%} {equity} / {1-equity_weight:.0%} {bond}, rebalanced annually",
+        allows_exit_to_cash=False,
     )

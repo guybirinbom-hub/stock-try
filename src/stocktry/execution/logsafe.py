@@ -2,9 +2,12 @@
 
 ``Scrubber`` redacts (a) the literal values of secret environment variables
 (Alpaca keys, ntfy topic, healthcheck URL, any ``*_KEY``/``*_SECRET``/
-``*_TOKEN``/``*_PAT``/``*_PASSWORD`` variable) and (b) patterns that look like
-Alpaca key ids, 40-character secrets, Alpaca account numbers and long digit
-runs. ``configure_logging`` installs it on every handler so that records from
+``*_TOKEN``/``*_PAT``/``*_PASSWORD`` variable) -- for a URL-valued secret also
+its path and every path or query segment of 8+ characters, because HTTP debug
+logs print ``GET /<ping-key>`` without the host -- and (b) patterns that look
+like Alpaca key ids, 40-character secrets, Alpaca account numbers and long
+digit runs (not digits after a decimal point, so amounts and weights stay
+readable). ``configure_logging`` installs it on every handler so that records from
 any library (including alpaca-py and requests) are scrubbed, and optionally
 wraps stdout/stderr so ``print`` output is scrubbed too.
 """
@@ -17,6 +20,7 @@ import os
 import re
 import sys
 from typing import Iterable, Mapping, TextIO
+from urllib.parse import urlsplit
 
 __all__ = ["Scrubber", "ScrubbingFilter", "ScrubbingStream", "configure_logging", "REDACTED"]
 
@@ -37,8 +41,27 @@ _PATTERNS = [
     re.compile(r"\b[PA]K[A-Z0-9]{14,}\b"),  # Alpaca key ids: PK... (paper), AK... (live)
     re.compile(r"\bPA[A-Z0-9]{8,}\b"),  # Alpaca paper account numbers
     re.compile(r"\b[A-Za-z0-9/+]{40}\b"),  # 40-char secrets (Alpaca secret keys)
-    re.compile(r"\b\d{8,}\b"),  # long digit runs (account numbers)
+    re.compile(r"(?<![.\d])\d{8,}\b"),  # long digit runs (account numbers); not decimals of amounts/weights
 ]
+_MIN_URL_PART = 8
+
+
+def _url_parts(value: str) -> set[str]:
+    """Path and path/query segments of a URL-valued secret (e.g. the healthchecks ping key)."""
+    try:
+        u = urlsplit(value)
+    except ValueError:
+        return set()
+    if not (u.scheme and u.netloc):
+        return set()
+    parts = set()
+    path = u.path.strip("/")
+    if len(path) >= _MIN_URL_PART:
+        parts.add(path)  # without the leading slash: logs keep "GET /[REDACTED]" readable
+    for seg in re.split(r"[/?&=]", u.path + "?" + u.query):
+        if len(seg) >= _MIN_URL_PART:
+            parts.add(seg)
+    return parts
 
 
 class Scrubber:
@@ -51,6 +74,7 @@ class Scrubber:
             if name in _SECRET_ENV_NAMES or _SECRET_NAME_RE.search(name):
                 if value and len(value) >= 4:
                     secrets.add(value)
+                    secrets |= _url_parts(value)
         # longest first so a secret containing another is fully redacted
         self._secrets = sorted(secrets, key=len, reverse=True)
 

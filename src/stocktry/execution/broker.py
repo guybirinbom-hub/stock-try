@@ -54,9 +54,12 @@ DUPLICATE_CLIENT_ORDER_ID_MESSAGE = "client_order_id must be unique"
 #: ``done_for_day`` is not final in Alpaca's lifecycle (a GTC order could
 #: resume next day) but every order this runner sends is DAY, so for a DAY
 #: order it is final: the unfilled remainder will never fill.
-TERMINAL_STATUSES = frozenset(
-    {"filled", "canceled", "expired", "rejected", "done_for_day", "replaced", "stopped", "suspended"}
-)
+#: ``stopped`` is NOT terminal: Alpaca uses it for an order whose trade is
+#: guaranteed but has not happened yet, so treating it as final and sending a
+#: residual order would buy or sell twice. ``suspended`` ("not eligible for
+#: trading", rare) is also kept open, conservatively: the runner waits, cancels,
+#: and never sends a second attempt while it is outstanding.
+TERMINAL_STATUSES = frozenset({"filled", "canceled", "expired", "rejected", "done_for_day", "replaced"})
 #: Order states that may still produce fills.
 OPEN_STATUSES = frozenset(
     {
@@ -70,6 +73,8 @@ OPEN_STATUSES = frozenset(
         "accepted_for_bidding",
         "calculated",
         "held",
+        "stopped",
+        "suspended",
     }
 )
 

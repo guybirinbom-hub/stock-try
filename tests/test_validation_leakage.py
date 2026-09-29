@@ -53,3 +53,48 @@ def test_alpha_tstat_recovers_known_alpha():
     y = 0.002 + 0.5 * x + pd.Series(rng.normal(0, 0.001, 2000))
     a, t, b = L.alpha_tstat(y, x)
     assert a == pytest.approx(0.002, abs=1e-4) and b == pytest.approx(0.5, abs=0.01) and t > 50
+
+
+def _tamper_panel():
+    idx = pd.bdate_range("2000-01-03", periods=252 * 8)
+    return panel_from_bars({"SPY": make_bars(gbm_close(len(idx), seed=5), dates=idx)}, None)
+
+
+def test_future_tamper_passes_for_a_causal_rule():
+    out = L.future_tamper_test(make_trend_sma("SPY", 10), _tamper_panel(),
+                               EngineConfig(costs=CostModel.gate(), start="2000-12"))
+    assert out["passed"] and out["targets_unchanged"] and out["frame_truncated"] and out["signals_compared"] > 30
+
+
+def test_future_tamper_catches_an_engine_that_hands_strategies_a_future_row(monkeypatch):
+    """CORE-10: simulate an engine regression (``iloc[:i+2]`` instead of ``iloc[:i+1]``). The one-bar-shift
+    test cannot see a one-day leak in a slow rule; the tamper test must."""
+    from stocktry.data.panel import PricePanel
+    from stocktry.strategies.base import StrategySpec, monthly_values, sma_signal
+
+    real = PricePanel.strategy_frame
+
+    class _OneRowLeak:
+        def __init__(self, df):
+            self.df = df
+
+        @property
+        def iloc(self):
+            df = self.df
+
+            class _Idx:
+                def __getitem__(self, key):
+                    if isinstance(key, slice) and key.start is None and key.stop is not None:
+                        return df.iloc[: key.stop + 1]
+                    return df.iloc[key]
+
+            return _Idx()
+
+    monkeypatch.setattr(PricePanel, "strategy_frame", lambda self, syms: _OneRowLeak(real(self, syms)))
+
+    def naive_sma(closes, asof):  # no defensive truncation: uses whatever rows it is given
+        return {"SPY": 1.0} if sma_signal(monthly_values(closes["SPY"]), 10) else {}
+
+    for spec in (StrategySpec("naive", ["SPY"], None, naive_sma), make_trend_sma("SPY", 10)):
+        out = L.future_tamper_test(spec, _tamper_panel(), EngineConfig(costs=CostModel.gate(), start="2000-12"))
+        assert not out["frame_truncated"] and not out["passed"], spec.name

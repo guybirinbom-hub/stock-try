@@ -88,3 +88,24 @@ def test_run_quality_raises_with_all_failures(bars_factory):
 def test_longest_identical_run():
     assert Q.longest_identical_run(pd.Series([1, 1, 2, 2, 2, 3])) == 3
     assert Q.longest_identical_run(pd.Series([1, 2, 3])) == 1
+
+
+def test_adjustment_consistency_accepts_a_clean_payer_and_rejects_a_bad_open(dividend_payer_bars):
+    ok, _ = Q.check_adjustment_consistency(dividend_payer_bars)
+    assert ok
+    bad = dividend_payer_bars.copy()
+    d = bad.index[700]
+    bad.loc[d, "open"] *= 1.8  # only the adjusted open is corrupted
+    ok, detail = Q.check_adjusted_jumps(bad)
+    assert not ok and str(d.date()) in detail
+
+
+def test_known_closure_is_not_a_gap(bars_factory):
+    idx = pd.bdate_range("2001-08-01", "2001-10-31")
+    idx = idx[(idx < pd.Timestamp("2001-09-11")) | (idx > pd.Timestamp("2001-09-14"))]  # 9/11 closure
+    ok, _ = Q.check_max_gap(bars_factory(np.linspace(100, 101, len(idx)), dates=idx))
+    assert ok
+    idx2 = pd.bdate_range("2002-08-01", "2002-10-31")
+    idx2 = idx2[(idx2 < pd.Timestamp("2002-09-10")) | (idx2 > pd.Timestamp("2002-09-13"))]  # same hole, no closure
+    ok, _ = Q.check_max_gap(bars_factory(np.linspace(100, 101, len(idx2)), dates=idx2))
+    assert not ok

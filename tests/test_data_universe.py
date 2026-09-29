@@ -104,3 +104,29 @@ def test_panel_alignment_ffill_and_no_backfill():
     assert p.closes["B"].iloc[:10].isna().all()
     assert p.closes["B"].iloc[15] == p.closes["B"].iloc[14]
     assert p.opens["B"].iloc[15] == p.closes["B"].iloc[14]
+
+
+def test_stale_cache_fallback_is_refused_by_the_panel_builder():
+    """CORE-09: a manifest flagged ``stale`` (network refresh failed, old cache returned) is never used silently."""
+    from stocktry.data.quality import DataQualityError
+
+    df = make_bars(np.linspace(100, 110, 60), start="2020-01-01")
+    with pytest.raises(DataQualityError, match="STALE"):
+        load_series("SPY", "etf", lambda s: (df, {"splits": [], "stale": True, "last_date": "2020-03-24"}),
+                    run_quality=False)
+
+
+def test_engine_refuses_an_end_date_past_a_series_last_bar():
+    """CORE-09: an explicit end after a column's last real bar would mark that column at NaN/flat."""
+    from stocktry.backtest.costs import CostModel
+    from stocktry.backtest.engine import EngineConfig, EngineError, run_backtest
+    from stocktry.strategies.buy_and_hold import make_sixty_forty
+
+    ia = pd.bdate_range("2019-01-01", "2021-06-30")
+    ib = pd.bdate_range("2019-01-01", "2021-09-30")
+    p = panel_from_bars({"AGG": make_bars(np.linspace(100, 150, len(ia)), dates=ia),
+                         "SPY": make_bars(np.linspace(50, 60, len(ib)), dates=ib)}, None)
+    assert p.closes["AGG"].loc["2021-07-01":].isna().all()  # never carried flat past its last bar
+    with pytest.raises(EngineError, match="last bar"):
+        run_backtest(make_sixty_forty("SPY", "AGG"), p, EngineConfig(costs=CostModel.zero(), start="2019-01",
+                                                                      end="2021-08"))

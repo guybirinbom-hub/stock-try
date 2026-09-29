@@ -9,7 +9,12 @@ network calls except filling an empty data cache, fixed seeds, no LLM.
 Headline configuration (also the trial ledger's headline run): $10,000
 starting capital, fractional shares, next-day-open fills, the "gate" cost
 tier (per-instrument half-spread floored at 5 bp per side + Alpaca
-regulatory fees + $1 minimum order). Sensitivity: 2x that cost tier.
+regulatory fees + $1 minimum on buy orders). Sensitivity: 2x that cost tier.
+
+Reproducibility: re-running on unchanged code and data rewrites every file
+byte-identically except the date stamp in the disclosure block and
+data_manifest.json (a UTC *date*, so same-day re-runs produce no diff at all);
+the trial ledger is only rewritten when a statistic changes.
 """
 from __future__ import annotations
 
@@ -65,6 +70,19 @@ CAND_FAMILY = {"trend_sma10": "trend_sma", "trend_absmom12": "trend_absmom", "tr
                "gtaa4": "gtaa4", "gtaa5": "gtaa5"}
 
 
+GATE_COSTS_TEXT = (
+    "half-spread per instrument floored at 5 bp per side (the Gate A floor), Alpaca pass-through regulatory fees "
+    "(SEC, FINRA TAF, CAT; each rounded up to the cent per day), Alpaca's $1 minimum on buy orders (sells have no "
+    "minimum), $10,000 starting capital, fractional shares, fills at the next day's open; fund expense ratios are "
+    "inside fund prices. Taxes, market impact and dividend withholding are NOT modelled.")
+BENCHMARK_TEXT = "SPY buy-and-hold (total return, same engine and costs); also a 60/40 SPY/AGG reference"
+
+
+def generated_stamp() -> str:
+    """UTC date only: same-day re-runs of unchanged code and data produce no diff in results/."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d") + " (UTC date)"
+
+
 def gate_costs() -> CostModel:
     return CostModel.gate()
 
@@ -96,6 +114,7 @@ class Pipeline:
                            fill=fill)
         assert not cfg.same_bar_fill  # the CLI path can never produce a leaky run
         res = run_backtest(spec, panel or self.panels[sample.name], cfg)
+        M.refuse_leaky(res)  # belt and braces: nothing leaky is ever ledgered or reported
         if record:
             r = res.monthly_returns
             sk, ku = M.skew_kurtosis(r - res.rf_monthly)
@@ -181,7 +200,7 @@ class Pipeline:
                                whole_shares=False, fill="next_open", t=len(tr),
                                sharpe_per_period=M.sharpe_per_period(tr, rf), skew=sk, kurtosis=ku, cagr=M.cagr(tr),
                                max_dd=M.max_drawdown(tot), first_month=str(tr.index[0].to_period("M")),
-                               last_month=str(tr.index[-1].to_period("M")), purpose="tranche")
+                               last_month=str(tr.index[-1].to_period("M")), purpose="tranche", leaky=False)
             rows.append({"sample": sname, "strategy": fam, "month_end_cagr": M.cagr(base.monthly_returns),
                          "min_cagr": by_off.min(), "max_cagr": by_off.max(), "spread_bp": (by_off.max() - by_off.min()) * 1e4,
                          "std_bp": by_off.std(ddof=1) * 1e4, "best_day": int(by_off.idxmax()), "worst_day": int(by_off.idxmin()),
@@ -231,7 +250,8 @@ class Pipeline:
                                t=len(oos), sharpe_per_period=M.sharpe_per_period(oos, wf.oos_rf), skew=sk, kurtosis=ku,
                                cagr=M.cagr(oos), max_dd=M.max_drawdown_from_returns(oos),
                                first_month=str(oos.index[0].to_period("M")),
-                               last_month=str(oos.index[-1].to_period("M")), purpose="walkforward")
+                               last_month=str(oos.index[-1].to_period("M")), purpose="walkforward",
+                               leaky=False)
         self.out["wf"] = pd.DataFrame(rows)
         self.out["wf_choices"] = choices
         self.log("walk-forward done")
@@ -318,12 +338,21 @@ class Pipeline:
                 v_f = self.ledger.sharpe_variance(s.name, (fam,))
                 d_all = deflated_sharpe(sr, len(ex), sk, ku, v_all, n_all)
                 d_fam = deflated_sharpe(sr, len(ex), sk, ku, v_f if math.isfinite(v_f) else 0.0, n_f)
+                # Supplementary (not a gate): probability that the true information ratio vs SPY buy-and-hold
+                # is above zero (PSR of monthly excess-over-SPY returns, no multiple-testing correction).
+                act = r.monthly_returns - self.head[(s.name, "spy_buy_hold")].monthly_returns
+                ir = M.sharpe_per_period(act)
+                ir_sk, ir_ku = M.skew_kurtosis(act)
+                psr_ir = (deflated_sharpe(ir, len(act), ir_sk, ir_ku, 0.0, 1).dsr
+                          if all(map(math.isfinite, (ir, ir_sk, ir_ku))) else float("nan"))
                 rows.append({"sample": s.name, "strategy": name, "t_months": len(ex), "sr_annual": sr * math.sqrt(12),
                              "skew": sk, "kurtosis": ku, "n_all": n_all, "sd_sr_all_annual": math.sqrt(v_all * 12),
                              "sr0_all_annual": d_all.sr0 * math.sqrt(12), "dsr_all": d_all.dsr,
                              "family": fam, "n_family": n_f,
                              "sr0_family_annual": d_fam.sr0 * math.sqrt(12), "dsr_family": d_fam.dsr,
-                             "psr_0": deflated_sharpe(sr, len(ex), sk, ku, 0.0, 1).dsr})
+                             "psr_0": deflated_sharpe(sr, len(ex), sk, ku, 0.0, 1).dsr,
+                             "ir_vs_spy_annual": ir * math.sqrt(12) if math.isfinite(ir) else float("nan"),
+                             "psr_ir_vs_spy": psr_ir})
         self.out["dsr"] = pd.DataFrame(rows)
         self.log("DSR done")
 
@@ -336,12 +365,14 @@ class Pipeline:
         o["foresight_real"] = L.foresight_test(L.monthly_panel_from(self.panels["spy_full"], "SPY"), "SPY")
         o["gap_synthetic"] = L.gap_foresight_test(L.synthetic_daily_panel())
         o["gap_real"] = L.gap_foresight_test(self.panels["spy_full"], "SPY", cash_yield=True)
-        shifts = []
+        shifts, tampers = [], []
         for s in SAMPLES.values():
             for c in s.primary_for:
                 cfg = EngineConfig(initial_capital=HEADLINE_CAPITAL, costs=gate_costs(), start=s.first_signal)
                 shifts.append({"sample": s.name, **L.one_bar_shift(STRATEGIES[c], self.panels[s.name], cfg)})
+                tampers.append({"sample": s.name, **L.future_tamper_test(STRATEGIES[c], self.panels[s.name], cfg)})
         o["shift"] = pd.DataFrame(shifts)
+        o["tamper"] = pd.DataFrame(tampers)
         self.out["leak"] = o
         self.log("leakage done")
 
@@ -373,10 +404,11 @@ class Pipeline:
                     yrs = r.years
                     avg_eq = float(r.equity.mean())
                     rows.append({"strategy": name, "capital": cap, "shares": "whole" if whole else "fractional",
-                                 "cagr": M.cagr(r.monthly_returns), "final_value": float(r.equity.iloc[-1]),
+                                 "cagr": M.cagr(r.monthly_returns), "max_dd": M.max_drawdown(r.equity),
+                                 "final_value": float(r.equity.iloc[-1]),
                                  "fees": r.total_fees, "fees_pct_per_year": r.total_fees / avg_eq / yrs,
                                  "spread_cost": r.total_spread_cost, "orders": len(r.trades),
-                                 "skipped_below_1": len(r.skipped),
+                                 "skipped_buys_below_1": len(r.skipped),
                                  "avg_cash": float((r.cash / r.equity).iloc[1:].mean()),
                                  "sharpe": M.sharpe(r.monthly_returns, r.rf_monthly)})
                     if cap in (1.0, 100.0) and not whole and len(r.skipped):
@@ -445,28 +477,35 @@ class Pipeline:
         row["A7 2008 & 2022 & >=2/3 5y"] = bool(crisis and wins >= 2)
         sh = self.out["leak"]["shift"]
         ds = float(sh[(sh["sample"] == s.name) & (sh["strategy"] == c)]["delta_sharpe"].iloc[0])
-        row["A8 leakage"] = bool(structural_ok and abs(ds) <= SHIFT_TOL)
+        tp = self.out["leak"]["tamper"]
+        tamper_ok = bool(tp[(tp["sample"] == s.name) & (tp["strategy"] == c)]["passed"].iloc[0])
+        row["A8 leakage"] = bool(structural_ok and tamper_ok and abs(ds) <= SHIFT_TOL)
         crit = [k for k in row if k.startswith("A")]
         failed = [k.split(" ")[0] for k in crit if row[k] is False]
         row["verdict"] = "eligible for paper trading" if not failed else "REJECTED (" + ", ".join(failed) + ")"
         return row
 
     # ------------------------------------------------------------------ writing
-    def disclosure(self, samples_txt: str) -> str:
+    def headline_worst(self) -> str:
         worst = min(((m["max_dd"], k) for k, m in self.metrics.items()), key=lambda x: x[0])
+        return (f"{pct(worst[0])} ({LABELS.get(worst[1][1], worst[1][1])}, {SAMPLES[worst[1][0]].label}, "
+                "daily closes)")
+
+    def disclosure(self, samples_txt: str, *, costs: str | None = None, worst: str | None = None,
+                   benchmark: str | None = None, show_2x: bool = False) -> str:
+        """The disclosure block, stating the cost tier, capital, benchmark and worst drawdown of *this* file."""
         n_total = self.ledger.n_trials()
         per = ", ".join(f"{s}: {self.ledger.n_trials(s)}" for s in SAMPLES)
+        if costs is None:
+            costs = GATE_COSTS_TEXT + (" Results at 2x these costs are also shown." if show_2x
+                                       else " Every table in this file uses this tier at 1x (no 2x-cost rows).")
         return disclosure_block(
             samples=samples_txt,
-            costs="half-spread per instrument floored at 5 bp per side (the Gate A floor), Alpaca pass-through "
-                  "regulatory fees (SEC, FINRA TAF, CAT; each rounded up to the cent per day), $1 minimum order, "
-                  "$10,000 starting capital, fills at the next day's open; fund expense ratios are inside fund "
-                  "prices. Taxes, market impact and dividend withholding are NOT modelled. 2x-cost results are shown.",
-            benchmark="SPY buy-and-hold (total return, same engine and costs); also a 60/40 SPY/AGG reference",
-            worst_drawdown=f"{pct(worst[0])} ({LABELS.get(worst[1][1], worst[1][1])}, {SAMPLES[worst[1][0]].label}, "
-                           "daily closes)",
+            costs=costs,
+            benchmark=benchmark or BENCHMARK_TEXT,
+            worst_drawdown=worst or self.headline_worst(),
             n_trials=f"{n_total} unique variants in results/trial_ledger.json ({per})",
-            generated=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"))
+            generated=generated_stamp())
 
     def samples_txt(self) -> str:
         parts = []
@@ -496,7 +535,7 @@ def metrics_table(p: Pipeline, s: Sample) -> pd.DataFrame:
 
 
 def write_summary(p: Pipeline) -> None:
-    lines = ["# Backtest summary", "", p.disclosure(p.samples_txt()), ""]
+    lines = ["# Backtest summary", "", p.disclosure(p.samples_txt(), show_2x=True), ""]
     lines += ["## Samples", "",
               "Each sample starts in cash at the close of the first signal month-end; monthly returns start the "
               "month after. Timing: signal on the last trading day's close, fill at the next day's open.", ""]
@@ -580,21 +619,31 @@ def write_summary(p: Pipeline) -> None:
 def write_scaling(p: Pipeline) -> None:
     df = p.out["scaling"]
     r_etf = p.head[("etf", "spy_buy_hold")].monthly_returns
+    w = df.loc[df["max_dd"].idxmin()]
+    worst = (f"{pct(w['max_dd'])} ({LABELS[w['strategy']]}, ${w['capital']:,.0f} {w['shares']}, ETF-only sample, "
+             "daily closes; the worst of the runs in this file)")
+    costs = ("the **modelled** tier: per-instrument half-spread from the universe table (no 5 bp floor), Alpaca "
+             "pass-through regulatory fees (SEC, FINRA TAF, CAT; each rounded up to the cent per day), Alpaca's $1 "
+             "minimum on buy orders (sells have no minimum); starting capital $1, $100, $1,000, $10,000 and "
+             "$100,000, fractional and whole shares, fills at the next day's open; fund expense ratios are inside "
+             "fund prices. Taxes, market impact and dividend withholding are NOT modelled. No 2x-cost rows.")
     lines = ["# Capital scaling: $1 to $100,000 with the Alpaca fee model", "", p.disclosure(
-        f"{SAMPLES['etf'].label} {r_etf.index[0]:%Y-%m}..{r_etf.index[-1]:%Y-%m}"), "",
+        f"{SAMPLES['etf'].label} {r_etf.index[0]:%Y-%m}..{r_etf.index[-1]:%Y-%m}", costs=costs, worst=worst), "",
         "Cost tier here is **modelled** (per-instrument half-spread from the universe table, no 5 bp floor) plus "
-        "Alpaca SEC/TAF/CAT fees rounded up to the cent per fee type per day, and Alpaca's $1 minimum notional: "
-        "orders below $1 are skipped (and logged). Whole-share mode rounds each target position down to whole "
-        "shares at the as-traded price; the remainder stays in cash earning T-bills.", ""]
+        "Alpaca SEC/TAF/CAT fees rounded up to the cent per fee type per day, and Alpaca's $1 minimum, which "
+        "applies to buy orders only: buys below $1 are skipped (and logged); sells of any size are sent (a partial "
+        "sell of at least one cent, a full exit of any size). Buys never spend the cash the day's fees need, so "
+        "cash never goes negative. Whole-share mode rounds each target position down to whole shares at the "
+        "as-traded price; the remainder stays in cash earning T-bills.", ""]
     for name in SAMPLES["etf"].strategies:
         t = df[df["strategy"] == name].copy()
         t.index = [f"${c:,.0f} {sh}" for c, sh in zip(t["capital"], t["shares"])]
         t = t.drop(columns=["strategy", "capital", "shares"])
         lines += [f"## {LABELS[name]}", "", md_table(t, {
-            "cagr": pct, "final_value": money, "fees": money, "fees_pct_per_year": lambda x: pct(x, 2),
-            "spread_cost": money, "orders": lambda x: f"{int(x)}", "skipped_below_1": lambda x: f"{int(x)}",
+            "cagr": pct, "max_dd": pct, "final_value": money, "fees": money, "fees_pct_per_year": lambda x: pct(x, 2),
+            "spread_cost": money, "orders": lambda x: f"{int(x)}", "skipped_buys_below_1": lambda x: f"{int(x)}",
             "avg_cash": lambda x: pct(x, 0), "sharpe": num}, index_label="capital / shares"), ""]
-    lines += ["## Largest orders skipped below the $1 minimum ($1 and $100 accounts, fractional)", ""]
+    lines += ["## Largest buy orders skipped below the $1 minimum ($1 and $100 accounts, fractional)", ""]
     for name, parts in p.out["scaling_skips"].items():
         sk = pd.concat(parts)
         sk["notional"] = sk["notional"].map(lambda x: f"${x:.2f}")
@@ -609,27 +658,48 @@ def write_scaling(p: Pipeline) -> None:
             f"- **{LABELS[name]}**: CAGR {pct(t.loc[1.0, 'cagr'])} at $1, {pct(t.loc[100.0, 'cagr'])} at $100, "
             f"{pct(t.loc[10_000.0, 'cagr'])} at $10,000 (fractional); fees {pct(t.loc[1.0, 'fees_pct_per_year'], 2)} "
             f"of average equity per year at $1 vs {pct(t.loc[10_000.0, 'fees_pct_per_year'], 3)} at $10,000; "
-            f"{int(t.loc[1.0, 'orders'])} orders placed and {int(t.loc[1.0, 'skipped_below_1'])} skipped at $1; "
+            f"{int(t.loc[1.0, 'orders'])} orders placed and {int(t.loc[1.0, 'skipped_buys_below_1'])} buys skipped at $1; "
             f"whole shares at $100: CAGR {pct(w.loc[100.0, 'cagr'])} with {pct(w.loc[100.0, 'avg_cash'], 0)} "
             "average cash.")
     notes += ["",
               "- Alpaca rounds each fee type up to $0.01 per day, so a $1 round trip costs $0.04 (4%); the fee floor "
               "stops mattering in the hundreds of dollars.",
-              "- Any order below $1 is skipped: multi-sleeve rules at $1 (20% sleeves = $0.20) can never trade, and a "
-              "$1 account that falls below $1 of cash cannot re-enter.",
+              "- Any buy below $1 is skipped: multi-sleeve rules at $1 (20% sleeves = $0.20) can never trade, and a "
+              "$1 account that falls below $1 (plus the day's fees) of cash cannot re-enter. Sells have no minimum, "
+              "so small accounts trim over-weight positions they cannot top up; the cash waits until a buy "
+              "reaches $1. A rule with fractional exposure (the trend ensemble moves in 1/14 steps) is hit hardest: "
+              "at $1 it sells on every step down but cannot buy back any step below $1, so it ratchets into cash "
+              "while paying the fee floor on each trim.",
               "- Whole-share accounts smaller than one share price (SPY traded at roughly $70-$690 in this sample) sit "
               "in cash; small whole-share results depend on when the account happened to afford a share.",
               "- Fractional-share dividends at Alpaca are rounded to the cent (a $1 SPY position receives $0.00); the "
               "engine's adjusted-price accounting reinvests them exactly, so the $1-$100 rows are optimistic.",
-              "- Negative average cash (e.g. -1%) is the cent-level fee debit left after a fully invested account "
-              "buys; it is too small to trade back (below $1).", ""]
+              "- Buys keep back the day's modelled fees, so cash never goes negative and no cent-sized sells are "
+              "generated to cover a fee debit.", ""]
     lines += notes
     p.write("scaling.md", "\n".join(lines))
     df.to_csv(p.results_dir / "scaling.csv", index=False)
 
 
+def _grid_worst(p: Pipeline) -> str:
+    """Worst daily-close drawdown among the sweep variants shown in plateau.md."""
+    worst = None
+    for (sname, grid), g in p.grids.items():
+        for key, res in g.items():
+            dd = M.max_drawdown(res.equity)
+            if worst is None or dd < worst[0]:
+                worst = (dd, sname, grid, key)
+    if worst is None:
+        return p.headline_worst()
+    dd, sname, grid, key = worst
+    return f"{pct(dd)} ({grid} variant {key}, {SAMPLES[sname].label}, daily closes)"
+
+
 def write_plateau(p: Pipeline) -> None:
-    lines = ["# Parameter plateaus and rebalance-day dispersion", "", p.disclosure(p.samples_txt()), "",
+    lines = ["# Parameter plateaus and rebalance-day dispersion", "", p.disclosure(
+        p.samples_txt(), worst=_grid_worst(p),
+        benchmark="none in this file (parameter sweeps of the candidates); SPY buy-and-hold is alongside every "
+                  "strategy in summary.md"), "",
              "Plateau statistic: worst Sharpe among lookbacks within +-25% of the default, divided by the default's "
              "Sharpe (Gate A.5 needs >= 0.70). All runs: gate cost tier, $10,000, next-open fills.", ""]
     pl = p.out["plateau"].copy()
@@ -664,7 +734,12 @@ def write_plateau(p: Pipeline) -> None:
 
 def write_walkforward(p: Pipeline) -> None:
     wf = p.out["wf"].set_index(["sample", "family"])
-    lines = ["# Walk-forward and out-of-sample tests", "", p.disclosure(p.samples_txt()), "",
+    wrow = p.out["wf"].loc[p.out["wf"]["wf_max_dd"].idxmin()]
+    worst = (f"{pct(wrow['wf_max_dd'])} (walk-forward {wrow['family']}, {SAMPLES[wrow['sample']].label}, month-end "
+             f"closes); the headline worst is {p.headline_worst()} (summary.md)")
+    lines = ["# Walk-forward and out-of-sample tests", "", p.disclosure(
+        p.samples_txt(), worst=worst,
+        benchmark="SPY buy-and-hold over the same out-of-sample months (the bh_ columns)"), "",
              "Expanding window: after 60 months, each year pick the lookback with the best in-sample Sharpe (vs T-bills) "
              "and trade it for the next 12 months; concatenate. 'default' = the pre-registered published lookback over "
              "the same out-of-sample months; 'bh' = SPY buy-and-hold over the same months. Switching cost between "
@@ -707,12 +782,21 @@ def write_dsr_pbo(p: Pipeline) -> None:
              "'family' only that strategy family's trials. psr_0 = probability the true Sharpe is above zero with no "
              "multiple-testing correction. The implementation reproduces the paper's worked example (0.9004 for "
              "N=100; 0.9505 for N=46) in tests/test_validation_dsr.py.", "",
+             "**What the null is.** The DSR (and Gate A.4's DSR half) tests Sharpe versus T-bills: the null is a true "
+             "Sharpe of zero (after the multiple-testing hurdle), not 'no better than buy-and-hold'. SPY buy-and-hold "
+             "itself scores about 0.95, so this half of A.4 is nearly non-binding and PBO does the rejecting. As a "
+             "supplementary, non-gating diagnostic, `ir_vs_spy_annual` is the annualized information ratio of monthly "
+             "returns in excess of SPY buy-and-hold and `psr_ir_vs_spy` the probability that the true information "
+             "ratio is above zero (PSR, skew/kurtosis-adjusted, no multiple-testing correction; n/a for SPY itself).",
+             "",
              f"Trial ledger: {p.ledger.n_trials()} unique variants in total; per sample: "
              + ", ".join(f"{s} {p.ledger.n_trials(s)}" for s in SAMPLES) + ".", "",
              md_table(d.set_index(["sample", "strategy"]), {
                  "t_months": lambda x: f"{int(x)}", "sr_annual": num, "skew": num, "kurtosis": num,
                  "n_all": lambda x: f"{int(x)}", "sd_sr_all_annual": num, "sr0_all_annual": num, "dsr_all": num,
-                 "n_family": lambda x: f"{int(x)}", "sr0_family_annual": num, "dsr_family": num, "psr_0": num},
+                 "n_family": lambda x: f"{int(x)}", "sr0_family_annual": num, "dsr_family": num, "psr_0": num,
+                 "ir_vs_spy_annual": lambda x: "n/a" if not math.isfinite(x) else num(x),
+                 "psr_ir_vs_spy": lambda x: "n/a" if not math.isfinite(x) else num(x)},
                  index_label="sample / strategy"), ""]
     pb = p.out["pbo"].set_index(["sample", "grid"])
     lines += ["## Probability of backtest overfitting (CSCV)", "",
@@ -738,7 +822,14 @@ def _kv(d: dict) -> str:
 
 def write_leakage(p: Pipeline) -> None:
     o = p.out["leak"]
-    lines = ["# Structural leakage tests", "", p.disclosure(p.samples_txt()), "",
+    lines = ["# Structural leakage tests", "", p.disclosure(
+        p.samples_txt(),
+        costs="the identity, foresight and gap tests are zero-cost diagnostic runs (no spread, fees or minimum "
+              "order; their numbers are not net of costs). The one-day-delay and future-tamper tables use the gate "
+              "tier: " + GATE_COSTS_TEXT,
+        worst=f"not applicable (diagnostic runs); the headline worst drawdown is {p.headline_worst()} (summary.md)",
+        benchmark="the tested asset itself (identity and foresight tests) and each candidate's own undelayed, "
+                  "untampered run (delay and tamper tests)"), "",
              "Look-ahead cannot be detected by statistics (a leaky oracle can pass DSR and PBO); these tests check the "
              "engine's timing directly. `same_bar_fill` exists only inside validation/leakage.py; no CLI can set it, "
              "and the ledger and report writers refuse its results.", "",
@@ -769,14 +860,30 @@ def write_leakage(p: Pipeline) -> None:
              md_table(o["shift"].set_index(["sample", "strategy"]), {"sharpe": num, "sharpe_shift1": num,
                                                                      "delta_sharpe": num, "cagr": pct,
                                                                      "cagr_shift1": pct},
-                      index_label="sample / strategy"), ""]
+                      index_label="sample / strategy"), "",
+              "## (e) Future tamper (part of Gate A.8)", "",
+              "Each candidate re-run on its real panel with every price after a mid-sample signal date multiplied by "
+              "1.7 (a boom) and by 0.3 (a crash), and the T-bill rate after it multiplied by 5. Pass: every target up "
+              "to and including that signal is unchanged under both, and the engine never handed the strategy a "
+              "row dated after its as-of date (checked by wrapping the strategy, before its own defensive "
+              "truncation). This is the direct check for look-ahead; the delay test above is only a sensitivity "
+              "number (a small leak in a slow monthly rule barely moves its Sharpe).", "",
+              md_table(o["tamper"].set_index(["sample", "strategy"]),
+                       {"signals_compared": integer, "targets_unchanged": yesno, "frame_truncated": yesno,
+                        "passed": yesno}, index_label="sample / strategy"), ""]
     p.write("leakage.md", "\n".join(lines))
 
 
 def write_crosscheck(p: Pipeline) -> None:
     o = p.out["xc"]
     bt_ = o["bt"].copy()
-    lines = ["# Independent cross-checks", "", p.disclosure(p.samples_txt()), "",
+    lines = ["# Independent cross-checks", "", p.disclosure(
+        p.samples_txt(),
+        costs="zero costs: engine-vs-bt runs and vendor-series-vs-Ken-French comparisons are like-for-like "
+              "diagnostics, not performance results (nothing here is net of costs)",
+        worst=f"not applicable (diagnostic comparisons); the headline worst drawdown is {p.headline_worst()} "
+              "(summary.md)",
+        benchmark="bt 1.2.3 (same rule, independent engine) and the Ken French market and T-bill series"), "",
              "## 1. bt 1.2.3 vs this engine (buy-and-hold SPY and SPY 10-month SMA)", "",
              "bt: RunMonthly on the first trading day of each month, SelectWhere on an independently computed daily SMA "
              "signal lagged one row, WeighEqually, Rebalance, zero commissions, fractional positions. Engine: "
@@ -851,7 +958,7 @@ def write_crosscheck(p: Pipeline) -> None:
 
 
 def write_manifest(p: Pipeline) -> None:
-    man = {"generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "symbols": {}, "splices": {},
+    man = {"generated_utc_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "symbols": {}, "splices": {},
            "samples": {}, "note": "Vendor price data is cached under data/ (gitignored) and never committed."}
     for sym in UNIVERSE:
         try:

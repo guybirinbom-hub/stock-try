@@ -13,6 +13,14 @@ Timing conventions
   matches the backtest's next-bar execution.
 * The *last completed session* at ``now`` is the latest session whose close is
   at or before ``now``. Sizing prices must be dated exactly that session.
+* A due rebalance may only be traded within its execution window: its
+  scheduled session and the next ``EXECUTION_WINDOW_SESSIONS - 1`` sessions
+  (the first five sessions of the month). New legs are opened only on the
+  scheduled session itself; sessions 2..5 only finish legs that already have
+  an order, unless an operator confirms a late start (see ``runner``). After
+  the window the month is missed and the runner waits for the next one: a
+  signal decided weeks earlier is never traded late (and then traded again at
+  the next month's rebalance).
 """
 
 from __future__ import annotations
@@ -38,10 +46,14 @@ __all__ = [
     "validate_strategy_name",
     "validate_symbol",
     "MAX_CLIENT_ORDER_ID_LEN",
+    "EXECUTION_WINDOW_SESSIONS",
+    "session_number",
 ]
 
 ET = ZoneInfo("America/New_York")
 MAX_CLIENT_ORDER_ID_LEN = 128
+#: Sessions (counting the scheduled rebalance date as 1) during which a due rebalance may be traded.
+EXECUTION_WINDOW_SESSIONS = 5
 
 _STRATEGY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.]{0,9}$")
@@ -130,6 +142,11 @@ def due_rebalance_date(calendar: Sequence[CalendarDay], now: datetime) -> date:
     if prev is None:
         raise ValueError("calendar window too narrow to find the due rebalance date")
     return prev
+
+
+def session_number(calendar: Sequence[CalendarDay], rebalance_date: date, today: date) -> int:
+    """1 on the rebalance date, 2 on the next session, ...: sessions in ``[rebalance_date, today]``."""
+    return sum(1 for s in calendar if rebalance_date <= s.date <= today)
 
 
 def validate_strategy_name(strategy: str) -> str:

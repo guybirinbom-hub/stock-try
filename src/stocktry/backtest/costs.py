@@ -29,10 +29,11 @@ or dollars per share (FINRA TAF, CAT). Share counts are **as-traded** shares
 (d) Expense ratios are *not* charged here: fund price series are already net
     of fees. Index-level series (``SymbolMeta.is_index_level``) are charged
     their expense ratio daily by the engine.
-Orders below ``min_notional`` dollars ($1 at Alpaca) are skipped and logged,
-except a sell that liquidates the whole position (modelled as the broker's
-close-position request; that the $1 minimum does not apply to it is an
-assumption, unverified against Alpaca).
+Minimum order size: Alpaca documents "a minimum 1 USD notional amount for Buy
+entry orders". So **buys** below ``min_notional`` dollars ($1) are skipped and
+logged; **sells** have no dollar minimum. A partial sell is a notional order in
+whole cents, so it is sent when it is at least ``min_sell_notional`` ($0.01); a
+full exit is a quantity sell of the whole position, of any size.
 """
 from __future__ import annotations
 
@@ -162,7 +163,8 @@ class CostModel:
     min_half_spread_bp: float = 0.0
     alpaca: AlpacaFeeModel | None = field(default_factory=AlpacaFeeModel)
     commission: CommissionModel = field(default_factory=CommissionModel)
-    min_notional: float = 1.0
+    min_notional: float = 1.0  # minimum BUY notional, dollars (Alpaca: buy entry orders only)
+    min_sell_notional: float = 0.01  # a partial (notional) sell is whole cents; full exits are qty sells
 
     def half_spread_bp(self, meta: SymbolMeta) -> float:
         if not self.spread:
@@ -186,14 +188,14 @@ class CostModel:
     @classmethod
     def zero(cls) -> "CostModel":
         """No spread, no fees, no minimum order size (identity and cross-check runs)."""
-        return cls(name="zero", spread=False, alpaca=None, min_notional=0.0)
+        return cls(name="zero", spread=False, alpaca=None, min_notional=0.0, min_sell_notional=0.0)
 
     @classmethod
     def modelled(cls) -> "CostModel":
-        """Per-instrument half-spreads + Alpaca fees + $1 minimum order."""
+        """Per-instrument half-spreads + Alpaca fees + $1 minimum buy order."""
         return cls(name="modelled")
 
     @classmethod
     def gate(cls) -> "CostModel":
-        """Gate A cost tier: half-spread floored at 5 bp per side + Alpaca fees + $1 minimum."""
+        """Gate A cost tier: half-spread floored at 5 bp per side + Alpaca fees + $1 minimum buy order."""
         return cls(name="gate", min_half_spread_bp=5.0)

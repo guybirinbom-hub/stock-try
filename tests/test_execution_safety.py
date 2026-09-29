@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -217,3 +218,19 @@ def test_live_authorized_unit():
     assert live_authorized({"LIVE_TRADING": "yes-live"}, True, True)
     assert not live_authorized({"LIVE_TRADING": "yes-live "}, True, True)
     assert not live_authorized({}, True, True)
+
+
+def test_kill_switch_path_refuses_a_non_source_install(monkeypatch, tmp_path):
+    """EXEC-16: after a non-editable install the derived repo root has no pyproject.toml; a committed
+    KILL_SWITCH file there would be ignored, so the default path is refused (fail safe) unless
+    KILL_SWITCH_FILE is set explicitly."""
+    from stocktry.execution import killswitch
+    from stocktry.execution.guards import KillSwitchEngaged
+
+    fake = tmp_path / "venv" / "lib" / "python3.11" / "site-packages" / "stocktry" / "execution" / "killswitch.py"
+    fake.parent.mkdir(parents=True)
+    monkeypatch.setattr(killswitch, "__file__", str(fake))
+    with pytest.raises(KillSwitchEngaged) as ei:
+        killswitch.default_kill_switch_path({})
+    assert ei.value.code == "kill_switch_path_unknown"
+    assert killswitch.default_kill_switch_path({"KILL_SWITCH_FILE": "/x/KS"}) == Path("/x/KS")

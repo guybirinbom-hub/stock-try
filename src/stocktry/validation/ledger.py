@@ -2,14 +2,17 @@
 
 The ledger is one JSON file (committed under ``results/trial_ledger.json``).
 Each *trial* is identified by ``(strategy family, parameters, sample)``;
-re-running the same trial updates its ``last_seen_utc``/``run_count`` and adds
-or refreshes a per-configuration run record (cost tier, capital, share mode,
-fill). Trials are never removed, so the trial count N can only grow.
+recording a trial adds or refreshes a per-configuration run record (cost tier,
+capital, share mode, fill). A run record is rewritten (with a new
+``timestamp_utc``) only when its statistics change, so re-running unchanged
+code on unchanged data leaves the file byte-identical. Trials are never
+removed, so the trial count N can only grow.
 
 Per-trial statistics used by the deflated Sharpe ratio (Sharpe per period,
 T, skew, non-excess kurtosis) come from the trial's *headline* run
 (``HEADLINE_RUN_KEY``) when present, else from its first recorded run.
-Leaky results (``same_bar_fill``) are refused.
+Leaky results (``same_bar_fill``) are refused: every caller must state
+``leaky=`` explicitly.
 """
 from __future__ import annotations
 
@@ -17,7 +20,7 @@ import hashlib
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -50,16 +53,28 @@ def run_key(cost_tier: str, capital: float, whole_shares: bool, fill: str) -> st
     return f"{cost_tier}|{capital:g}|{'whole' if whole_shares else 'fractional'}|{fill}"
 
 
+#: Per-trial fields written by earlier versions that changed on every re-run (git churn); dropped on load.
+_VOLATILE_TRIAL_FIELDS = ("last_seen_utc", "run_count")
+
+
 @dataclass
 class TrialLedger:
     path: Path
+    _data: dict | None = field(default=None, init=False, repr=False, compare=False)
 
     def load(self) -> dict:
-        if not Path(self.path).exists():
-            return {"schema_version": SCHEMA_VERSION,
-                    "description": "Every backtest variant run by stocktry; N for DSR/PBO comes from here.",
-                    "trials": {}}
-        return json.loads(Path(self.path).read_text())
+        if self._data is None:
+            if not Path(self.path).exists():
+                data = {"schema_version": SCHEMA_VERSION,
+                        "description": "Every backtest variant run by stocktry; N for DSR/PBO comes from here.",
+                        "trials": {}}
+            else:
+                data = json.loads(Path(self.path).read_text())
+            for tr in data.get("trials", {}).values():
+                for k in _VOLATILE_TRIAL_FIELDS:
+                    tr.pop(k, None)
+            self._data = data
+        return self._data
 
     def _save(self, data: dict) -> None:
         p = Path(self.path)
@@ -72,24 +87,33 @@ class TrialLedger:
     def record(self, *, strategy: str, family: str, params: dict[str, Any], sample: str, cost_tier: str,
                capital: float, whole_shares: bool, fill: str, t: int, sharpe_per_period: float, skew: float,
                kurtosis: float, cagr: float, max_dd: float, first_month: str, last_month: str,
-               purpose: str = "backtest", leaky: bool = False) -> str:
-        """Add/refresh one run; returns the trial key. Raises on leaky results."""
+               leaky: bool, purpose: str = "backtest") -> str:
+        """Add/refresh one run; returns the trial key.
+
+        ``leaky`` is required (no default) so no caller can forget it; a leaky
+        (same-bar-fill) result is refused. Nothing is written when the trial and
+        run already exist with identical statistics.
+        """
         if leaky:
             raise ValueError("refusing to record a leaky (same-bar-fill) result in the trial ledger")
         data = self.load()
         key = trial_key(family, params, sample)
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        stats = _jsonable({
+            "t": t, "sharpe_per_period": sharpe_per_period, "skew": skew, "kurtosis": kurtosis, "cagr": cagr,
+            "max_dd": max_dd, "first_month": first_month, "last_month": last_month,
+        })
+        rk = run_key(cost_tier, capital, whole_shares, fill)
         tr = data["trials"].get(key)
+        if tr is not None:
+            old = tr["runs"].get(rk)
+            if old is not None and {k: v for k, v in old.items() if k != "timestamp_utc"} == stats:
+                return key  # unchanged: no write, no timestamp churn
         if tr is None:
             tr = {"strategy": strategy, "family": family, "params": _jsonable(params), "sample": sample,
-                  "purpose": purpose, "first_seen_utc": now, "run_count": 0, "runs": {}}
+                  "purpose": purpose, "first_seen_utc": now, "runs": {}}
             data["trials"][key] = tr
-        tr["last_seen_utc"] = now
-        tr["run_count"] = int(tr.get("run_count", 0)) + 1
-        tr["runs"][run_key(cost_tier, capital, whole_shares, fill)] = _jsonable({
-            "t": t, "sharpe_per_period": sharpe_per_period, "skew": skew, "kurtosis": kurtosis, "cagr": cagr,
-            "max_dd": max_dd, "first_month": first_month, "last_month": last_month, "timestamp_utc": now,
-        })
+        tr["runs"][rk] = {**stats, "timestamp_utc": now}
         self._save(data)
         return key
 

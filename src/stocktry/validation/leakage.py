@@ -22,7 +22,15 @@
 
 (d) **One-bar shift**: each candidate is re-run with execution delayed by one
     extra trading day. A slow monthly rule should barely change; a large drop
-    would indicate the result depended on information at the signal bar.
+    would indicate the result depended on information at the signal bar. (Low
+    power against a small leak in a slow rule; (e) is the direct check.)
+
+(e) **Future tamper** (per candidate, on the real panel): every price after a
+    mid-sample signal date is replaced by a boom path (x1.7) and by a crash
+    path (x0.3), and the T-bill rate after it by five times its value. Every
+    target up to and including that signal must be identical, and the engine
+    must never hand the strategy a row dated after the as-of date (checked by
+    wrapping the strategy, before its own defensive truncation).
 
 "Within noise" uses the standard error of an annualized Sharpe ratio under
 the null, SE = sqrt((1 + SR^2 / 2) / years) with SR = 0 (Lo 2002, i.i.d.):
@@ -189,6 +197,53 @@ def one_bar_shift(spec: StrategySpec, panel: PricePanel, config: EngineConfig) -
     sr1 = M.sharpe(shifted.monthly_returns, shifted.rf_monthly)
     return {"strategy": spec.name, "sharpe": sr0, "sharpe_shift1": sr1, "delta_sharpe": sr1 - sr0,
             "cagr": M.cagr(base.monthly_returns), "cagr_shift1": M.cagr(shifted.monthly_returns)}
+
+
+# --------------------------------------------------------------------------- (e) future tamper
+TAMPER_SCALES = (1.7, 0.3)  # a boom and a crash after the cut: any peek past it flips a trend signal
+
+
+def tampered_panel(panel: PricePanel, cut: pd.Timestamp, scale: float, rate_mult: float = 5.0) -> PricePanel:
+    """A copy of ``panel`` whose prices after ``cut`` are multiplied by ``scale`` and whose T-bill
+    rate after ``cut`` is multiplied by ``rate_mult`` (index rebuilt from the tampered rates)."""
+    from dataclasses import replace
+
+    after = panel.calendar > cut
+    closes, opens = panel.closes.copy(), panel.opens.copy()
+    closes.loc[after] = closes.loc[after] * scale
+    opens.loc[after] = opens.loc[after] * scale
+    rate = panel.tbill_rate.copy()
+    rate[after] = rate[after] * rate_mult
+    idx = (1.0 + rate).cumprod()
+    idx = idx / idx.iloc[0]
+    idx.name = panel.tbill_index.name
+    return replace(panel, closes=closes, opens=opens, tbill_rate=rate, tbill_index=idx)
+
+
+def future_tamper_test(spec: StrategySpec, panel: PricePanel, config: EngineConfig, cut_frac: float = 0.5) -> dict:
+    """Targets up to a mid-sample signal must not change when everything after it is rewritten."""
+    from dataclasses import replace
+
+    late_rows: list[str] = []
+
+    def guarded(closes: pd.DataFrame, asof: pd.Timestamp) -> dict[str, float]:
+        if len(closes) and closes.index[-1] > asof:
+            late_rows.append(f"{asof.date()} saw {closes.index[-1].date()}")
+        return spec.compute_targets(closes, asof)
+
+    wrapped = replace(spec, compute_targets=guarded)
+    base = run_backtest(wrapped, panel, config)
+    sig = base.rebalances["signal_date"]
+    cut = pd.Timestamp(sig.iloc[int(len(sig) * cut_frac)])
+    before = base.rebalances.loc[sig <= cut, "targets"].tolist()
+    same = True
+    for scale in TAMPER_SCALES:
+        alt = run_backtest(wrapped, tampered_panel(panel, cut, scale), config)
+        s2 = alt.rebalances["signal_date"]
+        same = same and alt.rebalances.loc[s2 <= cut, "targets"].tolist() == before
+    return {"strategy": spec.name, "cut": str(cut.date()), "signals_compared": len(before),
+            "targets_unchanged": bool(same), "frame_truncated": not late_rows,
+            "passed": bool(same and not late_rows)}
 
 
 def monthly_panel_from(panel: PricePanel, symbol: str) -> PricePanel:
